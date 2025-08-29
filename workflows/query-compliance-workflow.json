@@ -1,0 +1,195 @@
+{
+  "name": "RAG Query Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "query-compliance",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -288,
+        16
+      ],
+      "id": "2430cf7a-1a37-420a-9249-3c768e9e692e",
+      "name": "Webhook",
+      "webhookId": "d9ece4d6-a9da-494b-bb03-caba40eae672"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8081/embed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ inputs: $json[\"body\"][\"query\"] }) }}\n\n",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -96,
+        16
+      ],
+      "id": "f494e303-93b4-443c-8c1a-202ce9234396",
+      "name": "TEI Query Embedding"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={\n  \"question\": \"{{ $('Webhook').first().json.body.query }}\",\n  \"results\": \"{{ $('Ask LLM').first().json.choices[0].message.content.replace(/\"/g, '\\\\\"') }}\",\n  \"found_chunks\": {{ $('Vector Search').first().json.result.length }},\n  \"status\": \"success\"\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        528,
+        16
+      ],
+      "id": "701f3da5-32b7-4f67-82fb-b8a8307c735e",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:6333/collections/compliance_docs/points/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($json) }},\n  \"limit\": 3,\n  \"with_payload\": true\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        112,
+        16
+      ],
+      "id": "48efdd5a-23d8-4dbb-920a-7c2c2141d15b",
+      "name": "Vector Search"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://35.209.219.117:8000/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"model\": \"llama-3.1-8b-instruct\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Question: {{ $('Webhook').first().json.body.query }}\\n\\nContext: {{ $('Vector Search').first().json.result.map(r => r.payload.text.replace(/[\\\"\\']/g, '').replace(/[\\r\\n]+/g, ' ').replace(/\\s+/g, ' ')).join(' --- ').substring(0, 2500) }}\"\n    }\n  ],\n  \"max_tokens\": 200,\n  \"temperature\": 0.1\n}",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        320,
+        16
+      ],
+      "id": "8b28e327-0275-4979-9d86-475a68edc401",
+      "name": "Ask LLM"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "TEI Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TEI Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Vector Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Search": {
+      "main": [
+        [
+          {
+            "node": "Ask LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask LLM": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "a94b2ca9-8cac-451e-84dd-a2a584851999",
+  "meta": {
+    "instanceId": "3159b0ab899773d5f12981a39e79d9cd5149947da5bb31e0396591565c8febf1"
+  },
+  "id": "UqUsKT6twtE73bdv",
+  "tags": []
+}

@@ -1,0 +1,228 @@
+{
+  "name": "RAG Ingestion Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload-document",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryPropertyName": "file",
+          "rawBody": true
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        64,
+        0
+      ],
+      "id": "5df85729-baa0-4f83-badc-db659d329525",
+      "name": "Webhook",
+      "webhookId": "73e5e6e9-e54a-47e3-8df0-ac9be3390922"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"message\": \"File processed successfully\",\n  \"total_chunks\": \"{{ $('Chunker').all().length }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1024,
+        0
+      ],
+      "id": "ee785d0f-7bbf-456f-b056-8517b4c68a07",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://35.209.113.236:9998/tika/form",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "text/plain"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file0"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        256,
+        0
+      ],
+      "id": "8165f123-4ac1-45b0-8bff-f5b615cd0a9c",
+      "name": "Tika"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the extracted text from Tika\nconst extractedText = $input.all()[0].json.data;\n\n// Chunking configuration\nconst CHUNK_SIZE = 800;\nconst OVERLAP = 100;\nconst MIN_CHUNK_SIZE = 100;\n\n// Function to split text into chunks\nfunction chunkText(text, chunkSize, overlap) {\n  const chunks = [];\n  let start = 0;\n  \n  while (start < text.length) {\n    let end = start + chunkSize;\n    \n    if (end < text.length) {\n      const searchStart = Math.max(end - 150, start + MIN_CHUNK_SIZE);\n      const chunk_part = text.slice(searchStart, end);\n      const sentenceEnd = chunk_part.search(/[.!?]\\s+/);\n      \n      if (sentenceEnd !== -1) {\n        end = searchStart + sentenceEnd + 1;\n      }\n    }\n    \n    const chunk = text.slice(start, end).trim();\n    \n    if (chunk.length >= MIN_CHUNK_SIZE) {\n      chunks.push({\n        text: chunk,\n        chunk_index: chunks.length,\n        start_offset: start,\n        end_offset: end,\n        length: chunk.length\n      });\n    }\n    \n    start = end - overlap;\n    if (start >= text.length) break;\n  }\n  \n  return chunks;\n}\n\n// Generate document ID\nconst docId = `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\n\n// Split text into chunks\nconst chunks = chunkText(extractedText, CHUNK_SIZE, OVERLAP);\n\n// Return chunks with metadata\nconst enrichedChunks = chunks.map(chunk => ({\n  doc_id: docId,\n  chunk_id: `${docId}_chunk_${chunk.chunk_index}`,\n  text: chunk.text,\n  chunk_index: chunk.chunk_index,\n  start_offset: chunk.start_offset,\n  end_offset: chunk.end_offset,\n  chunk_length: chunk.length,\n  total_chunks: chunks.length,\n  processed_date: new Date().toISOString()\n}));\n\nreturn enrichedChunks.map(chunk => ({ json: chunk }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        0
+      ],
+      "id": "0e48943c-2206-4434-b2d8-680f606e3392",
+      "name": "Chunker"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:8081/embed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"inputs\": {{ JSON.stringify($json.text) }},\n  \"truncate\": true\n}",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "844e4a5a-fc6b-4dba-bd60-739f52956d2c",
+      "name": "TEI"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://172.17.0.1:6333/collections/compliance_docs/points",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({   \"points\": [{     \"id\": $itemIndex,     \"vector\": $json,     \"payload\": {       \"doc_id\": $('Chunker').all()[$itemIndex].json.doc_id,       \"text\": $('Chunker').all()[$itemIndex].json.text,       \"chunk_index\": $('Chunker').all()[$itemIndex].json.chunk_index,       \"start_offset\": $('Chunker').all()[$itemIndex].json.start_offset,       \"end_offset\": $('Chunker').all()[$itemIndex].json.end_offset,       \"chunk_length\": $('Chunker').all()[$itemIndex].json.chunk_length,       \"total_chunks\": $('Chunker').all()[$itemIndex].json.total_chunks,       \"processed_date\": $('Chunker').all()[$itemIndex].json.processed_date     }   }] }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "96bc0adf-143f-4b41-95e8-07cb82ad11f1",
+      "name": "Upsert"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Tika",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tika": {
+      "main": [
+        [
+          {
+            "node": "Chunker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunker": {
+      "main": [
+        [
+          {
+            "node": "TEI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TEI": {
+      "main": [
+        [
+          {
+            "node": "Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "eb4ab2f2-6f3b-474b-982f-bdd9bbec2eb0",
+  "meta": {
+    "instanceId": "3159b0ab899773d5f12981a39e79d9cd5149947da5bb31e0396591565c8febf1"
+  },
+  "id": "yShCe8U7cjoXdFlT",
+  "tags": []
+}
