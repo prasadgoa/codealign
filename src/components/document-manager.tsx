@@ -13,74 +13,115 @@ interface CodeDocument {
   size: string;
   uploadDate: string;
   status: 'active' | 'processing' | 'error';
+  chunks?: number;
 }
 
 export function DocumentManager() {
-  const [documents, setDocuments] = useState<CodeDocument[]>([
-    {
-      id: '1',
-      name: 'International Building Code (IBC) 2021',
-      type: 'Building Code',
-      size: '2.4 MB',
-      uploadDate: '2024-01-15',
-      status: 'active'
-    },
-    {
-      id: '2',
-      name: 'Americans with Disabilities Act (ADA) Standards',
-      type: 'Accessibility Code',
-      size: '1.8 MB',
-      uploadDate: '2024-01-10',
-      status: 'active'
-    },
-    {
-      id: '3',
-      name: 'NFPA 101 Life Safety Code',
-      type: 'Fire Safety',
-      size: '3.1 MB',
-      uploadDate: '2024-01-08',
-      status: 'processing'
-    }
-  ]);
-  
+  const [documents, setDocuments] = useState<CodeDocument[]>([]);
   const [showRemoveAllDialog, setShowRemoveAllDialog] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const { toast } = useToast();
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) return;
 
-    Array.from(files).forEach(file => {
+    const fileArray = Array.from(files);
+    
+    // Add files to uploading state
+    const newUploadingIds = new Set(uploadingFiles);
+    const fileUploads = fileArray.map(file => {
+      const tempId = Date.now().toString() + Math.random();
+      newUploadingIds.add(tempId);
+      
+      // Add to documents list with processing status
       const newDoc: CodeDocument = {
-        id: Date.now().toString() + Math.random(),
+        id: tempId,
         name: file.name,
-        type: 'Unknown',
+        type: 'Processing...',
         size: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
         uploadDate: new Date().toISOString().split('T')[0],
         status: 'processing'
       };
       
       setDocuments(prev => [...prev, newDoc]);
-      
-      // Simulate processing
-      setTimeout(() => {
+      return { file, tempId };
+    });
+
+    setUploadingFiles(newUploadingIds);
+
+    // Process each file
+    for (const { file, tempId } of fileUploads) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('http://35.209.113.236:3001/api/upload-document', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Upload failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data.success) {
+          // Update document with success info
+          setDocuments(prev => 
+            prev.map(doc => 
+              doc.id === tempId 
+                ? { 
+                    ...doc, 
+                    status: 'active' as const, 
+                    type: 'Compliance Document',
+                    chunks: data.data?.total_chunks ? parseInt(data.data.total_chunks) : undefined
+                  }
+                : doc
+            )
+          );
+          
+          toast({
+            title: "Upload Successful",
+            description: `${file.name} processed successfully. ${data.data?.total_chunks || 'Multiple'} chunks created.`,
+          });
+        } else {
+          throw new Error(data.error || 'Upload processing failed');
+        }
+      } catch (error) {
+        console.error('Upload error:', error);
+        
+        // Update document with error status
         setDocuments(prev => 
           prev.map(doc => 
-            doc.id === newDoc.id 
-              ? { ...doc, status: 'active' as const, type: 'Code Document' }
+            doc.id === tempId 
+              ? { ...doc, status: 'error' as const, type: 'Upload Failed' }
               : doc
           )
         );
-      }, 2000);
-    });
+        
+        toast({
+          title: "Upload Failed",
+          description: `Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          variant: "destructive",
+        });
+      } finally {
+        // Remove from uploading set
+        setUploadingFiles(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(tempId);
+          return newSet;
+        });
+      }
+    }
 
-    toast({
-      title: "Upload Started",
-      description: `Uploading ${files.length} document(s). Processing will begin shortly.`,
-    });
+    // Clear the input
+    event.target.value = '';
   };
 
-  const removeDocument = (id: string) => {
+  const removeDocument = async (id: string) => {
+    // In a real implementation, you might call a delete API here
     setDocuments(prev => prev.filter(doc => doc.id !== id));
     toast({
       title: "Document Removed",
@@ -88,7 +129,8 @@ export function DocumentManager() {
     });
   };
 
-  const removeAllDocuments = () => {
+  const removeAllDocuments = async () => {
+    // In a real implementation, you might call a clear API here
     setDocuments([]);
     setShowRemoveAllDialog(false);
     toast({
@@ -121,10 +163,10 @@ export function DocumentManager() {
       <Card className="shadow-soft border-border/50">
         <CardHeader>
           <CardTitle className="text-xl font-semibold text-foreground">
-            Code Document Management
+            Document Upload & Management
           </CardTitle>
           <CardDescription>
-            Upload, view, and manage building codes and standards documents used for compliance checking.
+            Upload compliance documents (PDF, DOCX, TXT) to build your searchable knowledge base. Documents are processed and indexed for semantic search.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -163,7 +205,7 @@ export function DocumentManager() {
                 <DialogHeader>
                   <DialogTitle>Remove All Documents</DialogTitle>
                   <DialogDescription>
-                    Are you sure you want to remove all code documents? This action cannot be undone and will affect compliance checking functionality.
+                    Are you sure you want to remove all documents? This will clear your knowledge base and affect search functionality.
                   </DialogDescription>
                 </DialogHeader>
                 <DialogFooter>
@@ -177,13 +219,18 @@ export function DocumentManager() {
               </DialogContent>
             </Dialog>
           </div>
+          
+          <div className="text-sm text-muted-foreground">
+            <p>Supported formats: PDF, Word Documents (DOCX), Text files (TXT)</p>
+            <p>Maximum file size: 50MB per file</p>
+          </div>
         </CardContent>
       </Card>
 
       <Card className="shadow-soft border-border/50">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <span>Current Documents ({documents.length})</span>
+            <span>Document Library ({documents.length})</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -192,7 +239,7 @@ export function DocumentManager() {
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-semibold text-foreground mb-2">No Documents</h3>
               <p className="text-muted-foreground mb-4">
-                Upload code documents to start checking compliance.
+                Upload compliance documents to start building your searchable knowledge base.
               </p>
               <label htmlFor="file-upload-empty" className="cursor-pointer">
                 <Button variant="outline">
@@ -226,6 +273,9 @@ export function DocumentManager() {
                         <span>{doc.type}</span>
                         <span>{doc.size}</span>
                         <span>Uploaded {doc.uploadDate}</span>
+                        {doc.chunks && (
+                          <span className="text-accent">{doc.chunks} chunks</span>
+                        )}
                       </div>
                     </div>
                   </div>

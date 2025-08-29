@@ -7,10 +7,10 @@ import { CheckCircle, XCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface ComplianceResult {
-  isCompliant: boolean;
-  violations: string[];
-  compliantAspects: string[];
-  overallScore: number;
+  answer: string;
+  found_chunks: number;
+  query: string;
+  status: string;
 }
 
 export function ComplianceChecker() {
@@ -31,33 +31,48 @@ export function ComplianceChecker() {
 
     setIsChecking(true);
     
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Mock result
-    const mockResult: ComplianceResult = {
-      isCompliant: Math.random() > 0.5,
-      violations: [
-        "Exit door width does not meet minimum 32-inch requirement",
-        "Missing accessible parking spaces as per ADA requirements",
-        "Stairway riser height exceeds maximum 7.75 inches"
-      ],
-      compliantAspects: [
-        "Fire alarm system meets NFPA 72 standards",
-        "Sprinkler system coverage is adequate",
-        "Emergency lighting complies with IBC requirements"
-      ],
-      overallScore: 75
-    };
-    
-    setResult(mockResult);
-    setIsChecking(false);
-  };
+    try {
+      const response = await fetch('http://35.209.113.236:3001/api/query', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: description
+        }),
+      });
 
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-accent';
-    if (score >= 60) return 'text-yellow-600';
-    return 'text-destructive';
+      if (!response.ok) {
+        throw new Error(`API request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setResult({
+          answer: data.answer,
+          found_chunks: data.found_chunks,
+          query: data.query,
+          status: data.status
+        });
+        console.log('Result set:', result); 
+        toast({
+          title: "Analysis Complete",
+          description: `Found ${data.found_chunks} relevant document sections.`,
+        });
+      } else {
+        throw new Error(data.error || 'Analysis failed');
+      }
+    } catch (error) {
+      console.error('Compliance check error:', error);
+      toast({
+        title: "Analysis Failed",
+        description: error instanceof Error ? error.message : "Unable to analyze compliance. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsChecking(false);
+    }
   };
 
   return (
@@ -65,18 +80,18 @@ export function ComplianceChecker() {
       <Card className="shadow-soft border-border/50">
         <CardHeader>
           <CardTitle className="text-xl font-semibold text-foreground">
-            Property Description Analysis
+            Compliance Document Query
           </CardTitle>
           <CardDescription>
-            Enter a detailed description of your property, building, or room to check compliance against applicable codes and standards.
+            Ask questions about compliance requirements based on your uploaded documents. The system will search through your document library to provide relevant answers.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea
-            placeholder="Enter detailed property description here... (e.g., 'Two-story commercial building with retail space on ground floor, office space on second floor. Main entrance has a 30-inch door, parking lot has 20 spaces with 1 accessible space...')"
+            placeholder="Ask a compliance question... (e.g., 'What are the fire safety requirements for commercial buildings?', 'What is the minimum door width for accessibility?', 'What are the parking space requirements?')"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="min-h-[200px] resize-none border-border/50 focus:border-primary transition-all"
+            className="min-h-[150px] resize-none border-border/50 focus:border-primary transition-all"
           />
           <div className="flex justify-between items-center">
             <span className="text-sm text-muted-foreground">
@@ -91,10 +106,10 @@ export function ComplianceChecker() {
               {isChecking ? (
                 <>
                   <Loader2 className="animate-spin" />
-                  Analyzing...
+                  Searching...
                 </>
               ) : (
-                'Check Compliance'
+                'Search Documents'
               )}
             </Button>
           </div>
@@ -102,66 +117,38 @@ export function ComplianceChecker() {
       </Card>
 
       {result && (
-        <Card className={`shadow-medium border-l-4 ${
-          result.isCompliant 
-            ? 'border-l-accent bg-gradient-to-r from-accent/5 to-transparent' 
-            : 'border-l-destructive bg-gradient-to-r from-destructive/5 to-transparent'
-        }`}>
+        <Card className="shadow-medium border-l-4 border-l-primary bg-gradient-to-r from-primary/5 to-transparent">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2">
-                {result.isCompliant ? (
-                  <>
-                    <CheckCircle className="h-6 w-6 text-accent" />
-                    Compliant
-                  </>
-                ) : (
-                  <>
-                    <XCircle className="h-6 w-6 text-destructive" />
-                    Non-Compliant
-                  </>
-                )}
+                <CheckCircle className="h-6 w-6 text-accent" />
+                Search Results
               </CardTitle>
-              <Badge variant="outline" className={`text-lg font-semibold ${getScoreColor(result.overallScore)}`}>
-                {result.overallScore}% Score
+              <Badge variant="outline" className="text-sm">
+                {result.found_chunks} documents found
               </Badge>
             </div>
             <CardDescription>
-              Compliance analysis results based on current code documents
+              Answer based on your uploaded compliance documents
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
-            {result.violations.length > 0 && (
-              <div>
-                <h4 className="font-semibold text-destructive mb-3 flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4" />
-                  Code Violations ({result.violations.length})
-                </h4>
-                <div className="space-y-2">
-                  {result.violations.map((violation, index) => (
-                    <div key={index} className="p-3 rounded-md bg-destructive/5 border border-destructive/20">
-                      <p className="text-sm text-foreground">{violation}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {result.compliantAspects.length > 0 && (
-              <div>
-                <h4 className="font-semibold text-accent mb-3 flex items-center gap-2">
-                  <CheckCircle className="h-4 w-4" />
-                  Compliant Aspects ({result.compliantAspects.length})
-                </h4>
-                <div className="space-y-2">
-                  {result.compliantAspects.map((aspect, index) => (
-                    <div key={index} className="p-3 rounded-md bg-accent/5 border border-accent/20">
-                      <p className="text-sm text-foreground">{aspect}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+          <CardContent className="space-y-4">
+            <div className="p-4 rounded-lg bg-card border border-border/50">
+              <h4 className="font-semibold text-foreground mb-2">Question:</h4>
+              <p className="text-sm text-muted-foreground">{result.query}</p>
+            </div>
+            
+            <div className="p-4 rounded-lg bg-accent/5 border border-accent/20">
+              <h4 className="font-semibold text-accent mb-2 flex items-center gap-2">
+                <CheckCircle className="h-4 w-4" />
+                Answer:
+              </h4>
+              <p className="text-foreground leading-relaxed">{result.answer}</p>
+            </div>
+            
+            <div className="text-sm text-muted-foreground">
+              <span>Source: {result.found_chunks} relevant document section{result.found_chunks !== 1 ? 's' : ''} analyzed</span>
+            </div>
           </CardContent>
         </Card>
       )}
