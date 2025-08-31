@@ -1,26 +1,75 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Upload, FileText, Trash2, Eye, Plus, AlertTriangle } from 'lucide-react';
+import { Upload, FileText, Trash2, Eye, Plus, RefreshCw } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface CodeDocument {
-  id: string;
-  name: string;
-  type: string;
-  size: string;
-  uploadDate: string;
-  status: 'active' | 'processing' | 'error';
-  chunks?: number;
+  id: number;
+  filename: string;
+  original_filename: string;
+  file_size: number;
+  mime_type: string;
+  upload_date: string;
+  processing_status: 'processing' | 'completed' | 'failed';
+  total_chunks: number;
+  actual_chunks?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiResponse<T> {
+  success: boolean;
+  documents?: T[];
+  document?: T;
+  error?: string;
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
 }
 
 export function DocumentManager() {
   const [documents, setDocuments] = useState<CodeDocument[]>([]);
-  const [showRemoveAllDialog, setShowRemoveAllDialog] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
+  const [showRemoveAllDialog, setShowRemoveAllDialog] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const { toast } = useToast();
+
+  // Load documents from database
+  const loadDocuments = async () => {
+    try {
+      setRefreshing(true);
+      const response = await fetch('http://35.209.113.236:3001/api/documents');
+      const data: ApiResponse<CodeDocument> = await response.json();
+      
+      if (data.success && data.documents) {
+        setDocuments(data.documents);
+      } else {
+        throw new Error(data.error || 'Failed to load documents');
+      }
+    } catch (error) {
+      console.error('Error loading documents:', error);
+      toast({
+        title: "Load Error",
+        description: "Failed to load documents from database.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  // Load documents on component mount
+  useEffect(() => {
+    loadDocuments();
+  }, []);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -28,30 +77,10 @@ export function DocumentManager() {
 
     const fileArray = Array.from(files);
     
-    // Add files to uploading state
-    const newUploadingIds = new Set(uploadingFiles);
-    const fileUploads = fileArray.map(file => {
+    for (const file of fileArray) {
       const tempId = Date.now().toString() + Math.random();
-      newUploadingIds.add(tempId);
-      
-      // Add to documents list with processing status
-      const newDoc: CodeDocument = {
-        id: tempId,
-        name: file.name,
-        type: 'Processing...',
-        size: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
-        uploadDate: new Date().toISOString().split('T')[0],
-        status: 'processing'
-      };
-      
-      setDocuments(prev => [...prev, newDoc]);
-      return { file, tempId };
-    });
+      setUploadingFiles(prev => new Set([...prev, tempId]));
 
-    setUploadingFiles(newUploadingIds);
-
-    // Process each file
-    for (const { file, tempId } of fileUploads) {
       try {
         const formData = new FormData();
         formData.append('file', file);
@@ -61,53 +90,35 @@ export function DocumentManager() {
           body: formData,
         });
 
-        if (!response.ok) {
-          throw new Error(`Upload failed: ${response.status}`);
-        }
-
         const data = await response.json();
         
         if (data.success) {
-          // Update document with success info
-          setDocuments(prev => 
-            prev.map(doc => 
-              doc.id === tempId 
-                ? { 
-                    ...doc, 
-                    status: 'active' as const, 
-                    type: 'Compliance Document',
-                    chunks: data.data?.total_chunks ? parseInt(data.data.total_chunks) : undefined
-                  }
-                : doc
-            )
-          );
-          
           toast({
             title: "Upload Successful",
-            description: `${file.name} processed successfully. ${data.data?.total_chunks || 'Multiple'} chunks created.`,
+            description: `${file.name} uploaded successfully. Document ID: ${data.documentId}`,
           });
+          
+          // Refresh document list to show new document
+          await loadDocuments();
         } else {
-          throw new Error(data.error || 'Upload processing failed');
+          if (response.status === 409) {
+            toast({
+              title: "Duplicate Document",
+              description: `${file.name} already exists in the system.`,
+              variant: "destructive",
+            });
+          } else {
+            throw new Error(data.error || 'Upload failed');
+          }
         }
       } catch (error) {
         console.error('Upload error:', error);
-        
-        // Update document with error status
-        setDocuments(prev => 
-          prev.map(doc => 
-            doc.id === tempId 
-              ? { ...doc, status: 'error' as const, type: 'Upload Failed' }
-              : doc
-          )
-        );
-        
         toast({
           title: "Upload Failed",
           description: `Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
           variant: "destructive",
         });
       } finally {
-        // Remove from uploading set
         setUploadingFiles(prev => {
           const newSet = new Set(prev);
           newSet.delete(tempId);
@@ -120,63 +131,146 @@ export function DocumentManager() {
     event.target.value = '';
   };
 
-  const removeDocument = async (id: string) => {
-    // In a real implementation, you might call a delete API here
-    setDocuments(prev => prev.filter(doc => doc.id !== id));
-    toast({
-      title: "Document Removed",
-      description: "The document has been removed from the system.",
-    });
+  const removeDocument = async (documentId: number, filename: string) => {
+    try {
+      const response = await fetch(`http://35.209.113.236:3001/api/documents/${documentId}`, {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        toast({
+          title: "Document Deleted",
+          description: `${filename} and ${data.deletedVectors || 0} vectors removed successfully.`,
+        });
+        
+        // Refresh document list
+        await loadDocuments();
+      } else {
+        throw new Error(data.error || 'Delete failed');
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast({
+        title: "Delete Failed",
+        description: `Failed to delete ${filename}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        variant: "destructive",
+      });
+    }
   };
 
   const removeAllDocuments = async () => {
-    // In a real implementation, you might call a clear API here
-    setDocuments([]);
-    setShowRemoveAllDialog(false);
-    toast({
-      title: "All Documents Removed",
-      description: "All code documents have been removed from the system.",
-      variant: "destructive",
-    });
+    try {
+      const response = await fetch('http://35.209.113.236:3001/api/documents', {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setShowRemoveAllDialog(false);
+        toast({
+          title: "All Documents Deleted",
+          description: `All documents and ${data.deletedVectors || 0} vectors removed from the system.`,
+        });
+        
+        // Clear local state and refresh
+        setDocuments([]);
+        await loadDocuments();
+      } else {
+        throw new Error(data.error || 'Delete all failed');
+      }
+    } catch (error) {
+      console.error('Delete all error:', error);
+      setShowRemoveAllDialog(false);
+      toast({
+        title: "Delete Failed",
+        description: `Failed to delete all documents: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        variant: "destructive",
+      });
+    }
   };
 
   const viewDocument = (doc: CodeDocument) => {
     toast({
-      title: "Document Viewer",
-      description: `Opening ${doc.name} in viewer...`,
+      title: "Document Details",
+      description: `${doc.filename} - ${doc.total_chunks} chunks, ${(doc.file_size / (1024 * 1024)).toFixed(1)}MB`,
     });
   };
 
-  const getStatusBadge = (status: CodeDocument['status']) => {
+  const getStatusBadge = (status: CodeDocument['processing_status']) => {
     switch (status) {
-      case 'active':
+      case 'completed':
         return <Badge variant="default" className="bg-accent text-accent-foreground">Active</Badge>;
       case 'processing':
         return <Badge variant="outline" className="border-yellow-500 text-yellow-600">Processing</Badge>;
-      case 'error':
+      case 'failed':
         return <Badge variant="destructive">Error</Badge>;
     }
   };
+
+  const formatFileSize = (bytes: number) => {
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString();
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <Card className="shadow-soft border-border/50">
+          <CardContent className="flex items-center justify-center py-12">
+            <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+            <span className="ml-2 text-muted-foreground">Loading documents...</span>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <Card className="shadow-soft border-border/50">
         <CardHeader>
-          <CardTitle className="text-xl font-semibold text-foreground">
-            Document Upload & Management
-          </CardTitle>
-          <CardDescription>
-            Upload compliance documents (PDF, DOCX, TXT) to build your searchable knowledge base. Documents are processed and indexed for semantic search.
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-xl font-semibold text-foreground">
+                Document Upload & Management
+              </CardTitle>
+              <CardDescription>
+                Upload compliance documents (PDF, DOCX, TXT) to build your searchable knowledge base. Documents are processed and indexed for semantic search.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadDocuments}
+              disabled={refreshing}
+            >
+              {refreshing ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="flex-1">
               <label htmlFor="file-upload" className="cursor-pointer">
-                <Button asChild size="lg" className="w-full">
+                <Button 
+                  asChild 
+                  size="lg" 
+                  className="w-full"
+                  disabled={uploadingFiles.size > 0}
+                >
                   <span>
                     <Upload className="mr-2 h-4 w-4" />
-                    Upload Documents
+                    {uploadingFiles.size > 0 ? 'Uploading...' : 'Upload Documents'}
                   </span>
                 </Button>
               </label>
@@ -205,7 +299,7 @@ export function DocumentManager() {
                 <DialogHeader>
                   <DialogTitle>Remove All Documents</DialogTitle>
                   <DialogDescription>
-                    Are you sure you want to remove all documents? This will clear your knowledge base and affect search functionality.
+                    Are you sure you want to remove all {documents.length} documents? This will clear your knowledge base and all associated vectors from the search index.
                   </DialogDescription>
                 </DialogHeader>
                 <DialogFooter>
@@ -220,9 +314,10 @@ export function DocumentManager() {
             </Dialog>
           </div>
           
-          <div className="text-sm text-muted-foreground">
+          <div className="mt-4 text-sm text-muted-foreground space-y-1">
             <p>Supported formats: PDF, Word Documents (DOCX), Text files (TXT)</p>
             <p>Maximum file size: 50MB per file</p>
+            <p>Duplicate detection: Files are checked by content hash</p>
           </div>
         </CardContent>
       </Card>
@@ -231,6 +326,11 @@ export function DocumentManager() {
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             <span>Document Library ({documents.length})</span>
+            {documents.length > 0 && (
+              <div className="text-sm text-muted-foreground">
+                Total: {documents.reduce((sum, doc) => sum + doc.total_chunks, 0)} chunks
+              </div>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -268,34 +368,33 @@ export function DocumentManager() {
                       <FileText className="h-5 w-5 text-primary" />
                     </div>
                     <div>
-                      <h4 className="font-medium text-foreground">{doc.name}</h4>
+                      <h4 className="font-medium text-foreground">{doc.original_filename}</h4>
                       <div className="flex items-center space-x-4 text-sm text-muted-foreground">
-                        <span>{doc.type}</span>
-                        <span>{doc.size}</span>
-                        <span>Uploaded {doc.uploadDate}</span>
-                        {doc.chunks && (
-                          <span className="text-accent">{doc.chunks} chunks</span>
-                        )}
+                        <span>ID: {doc.id}</span>
+                        <span>{formatFileSize(doc.file_size)}</span>
+                        <span>Uploaded {formatDate(doc.upload_date)}</span>
+                        <span className="text-accent">{doc.total_chunks} chunks</span>
                       </div>
                     </div>
                   </div>
                   
                   <div className="flex items-center space-x-3">
-                    {getStatusBadge(doc.status)}
+                    {getStatusBadge(doc.processing_status)}
                     
                     <div className="flex space-x-1">
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => viewDocument(doc)}
-                        disabled={doc.status !== 'active'}
+                        disabled={doc.processing_status !== 'completed'}
                       >
                         <Eye className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => removeDocument(doc.id)}
+                        onClick={() => removeDocument(doc.id, doc.original_filename)}
+                        disabled={uploadingFiles.size > 0}
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
