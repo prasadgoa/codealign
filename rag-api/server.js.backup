@@ -1,0 +1,289 @@
+const express = require('express');
+const multer = require('multer');
+const axios = require('axios');
+const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Configuration
+const N8N_BASE_URL = 'http://35.209.113.236:5678';
+const UPLOAD_WEBHOOK = `${N8N_BASE_URL}/webhook/upload-document`;
+const QUERY_WEBHOOK = `${N8N_BASE_URL}/webhook/query-compliance`;
+
+// Middleware
+app.use(cors({
+  origin: ['http://35.209.113.236:3000', 'http://localhost:3000'],
+  credentials: true
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept PDF, DOCX, TXT files
+    const allowedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+      'text/plain'
+    ];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only PDF, DOCX, and TXT files are allowed.'));
+    }
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Document upload endpoint
+app.post('/api/upload-document', upload.single('file'), async (req, res) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Document upload request received`);
+    
+    if (!req.file) {
+      return res.status(400).json({ 
+        error: 'No file provided',
+        success: false 
+      });
+    }
+
+    console.log(`File details: ${req.file.originalname}, ${req.file.size} bytes, ${req.file.mimetype}`);
+
+    // Create FormData for n8n webhook
+    const FormData = require('form-data');
+    const formData = new FormData();
+    formData.append('file', req.file.buffer, {
+      filename: req.file.originalname,
+      contentType: req.file.mimetype
+    });
+
+    // Forward to n8n webhook
+    const response = await axios.post(UPLOAD_WEBHOOK, formData, {
+      headers: {
+        ...formData.getHeaders(),
+      },
+      timeout: 120000, // 2 minute timeout
+      maxContentLength: 50 * 1024 * 1024,
+      maxBodyLength: 50 * 1024 * 1024
+    });
+
+    console.log(`n8n response: ${response.status}`);
+    
+    res.json({
+      success: true,
+      message: 'Document uploaded and processed successfully',
+      filename: req.file.originalname,
+      data: response.data
+    });
+
+  } catch (error) {
+    console.error('Upload error:', error.message);
+    
+    if (error.code === 'ECONNREFUSED') {
+      return res.status(503).json({
+        error: 'n8n service unavailable',
+        success: false
+      });
+    }
+    
+    if (error.response) {
+      return res.status(error.response.status).json({
+        error: 'n8n processing failed',
+        details: error.response.data,
+        success: false
+      });
+    }
+
+    res.status(500).json({
+      error: 'Internal server error during upload',
+      success: false
+    });
+  }
+});
+
+// Query endpoint
+app.post('/api/query', async (req, res) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Query request received`);
+    
+    const { query, filters } = req.body;
+    
+    if (!query || query.trim() === '') {
+      return res.status(400).json({
+        error: 'Query is required',
+        success: false
+      });
+    }
+
+    console.log(`Query: "${query}"`);
+
+    // Forward to n8n webhook
+    const response = await axios.post(QUERY_WEBHOOK, {
+      query: query.trim(),
+      filters: filters || {}
+    }, {
+      timeout: 60000, // 1 minute timeout
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    console.log(`n8n query response: ${response.status}`);
+    
+    // Handle response data with robust error handling
+    let responseData;
+    if (typeof response.data === 'string') {
+      try {
+        responseData = JSON.parse(response.data);
+      } catch (parseError) {
+        console.error('JSON parse error:', parseError.message);
+        console.error('Error position:', parseError.message.match(/position (\d+)/)?.[1] || 'unknown');
+        
+        // Show problematic area around the error
+        const errorPos = parseInt(parseError.message.match(/position (\d+)/)?.[1]) || 0;
+        const start = Math.max(0, errorPos - 20);
+        const end = Math.min(response.data.length, errorPos + 20);
+        console.error('Problematic JSON segment:', response.data.substring(start, end));
+        
+        // Try to extract data manually as fallback
+        try {
+          const questionMatch = response.data.match(/"question":\s*"([^"]*?)"/);
+          const resultsMatch = response.data.match(/"results":\s*"([^"]*?)"/);
+          const chunksMatch = response.data.match(/"found_chunks":\s*(\d+)/);
+          
+          if (questionMatch && resultsMatch && chunksMatch) {
+            console.log('Using manual extraction fallback');
+            responseData = {
+              question: questionMatch[1],
+              results: resultsMatch[1],
+              found_chunks: parseInt(chunksMatch[1]),
+              status: 'success'
+            };
+          } else {
+            throw new Error('Manual extraction failed');
+          }
+        } catch (extractError) {
+          console.error('Manual extraction also failed:', extractError.message);
+          return res.status(500).json({
+            error: 'Response parsing failed',
+            success: false
+          });
+        }
+      }
+    } else {
+      responseData = response.data;
+    }
+
+    res.json({
+      success: true,
+      query: query,
+      answer: responseData.results || responseData.answer || "No answer generated",
+      sources: responseData.sources || [],
+      found_chunks: responseData.found_chunks || 0,
+      status: responseData.status || 'success'
+    });
+
+  } catch (error) {
+    console.error('Query error:', error.message);
+    
+    if (error.code === 'ECONNREFUSED') {
+      return res.status(503).json({
+        error: 'n8n service unavailable',
+        success: false
+      });
+    }
+    
+    if (error.response) {
+      return res.status(error.response.status).json({
+        error: 'n8n query failed',
+        details: error.response.data,
+        success: false
+      });
+    }
+
+    res.status(500).json({
+      error: 'Internal server error during query',
+      success: false
+    });
+  }
+});
+
+// Test n8n connectivity
+app.get('/api/test-n8n', async (req, res) => {
+  try {
+    // Test both webhooks
+    const uploadTest = axios.get(`${N8N_BASE_URL}/healthz`).catch(() => ({ status: 'error' }));
+    
+    const results = await Promise.allSettled([uploadTest]);
+    
+    res.json({
+      n8n_health: results[0].status === 'fulfilled' ? 'healthy' : 'unhealthy',
+      upload_webhook: UPLOAD_WEBHOOK,
+      query_webhook: QUERY_WEBHOOK,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to test n8n connectivity',
+      details: error.message
+    });
+  }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        error: 'File too large. Maximum size is 50MB.',
+        success: false
+      });
+    }
+  }
+  
+  console.error('Unhandled error:', error);
+  res.status(500).json({
+    error: 'Internal server error',
+    success: false
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully');
+  process.exit(0);
+});
+
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`=================================`);
+  console.log(`🚀 RAG API Server running on port ${PORT}`);
+  console.log(`📡 n8n webhooks: ${N8N_BASE_URL}`);
+  console.log(`🔗 Health check: http://35.209.113.236:${PORT}/health`);
+  console.log(`=================================`);
+});
+
+module.exports = app;

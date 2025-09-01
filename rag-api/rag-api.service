@@ -1,0 +1,34 @@
+[Unit]
+Description=RAG API Server
+Documentation=https://github.com/your-repo/rag-system
+After=network.target
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/rag-api
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+Environment=PORT=3001
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rag-api
+
+# Security settings
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/rag-api
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
