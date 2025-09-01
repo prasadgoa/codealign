@@ -53,16 +53,10 @@ export function DocumentManager() {
     try {
       setRefreshing(true);
       const response = await fetch('http://35.209.113.236:3001/api/documents');
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
       const data: ApiResponse<CodeDocument> = await response.json();
       
-      if (data.success) {
-        // Set documents to empty array if not provided
-        setDocuments(data.documents || []);
+      if (data.success && data.documents) {
+        setDocuments(data.documents);
       } else {
         throw new Error(data.error || 'Failed to load documents');
       }
@@ -70,7 +64,7 @@ export function DocumentManager() {
       console.error('Error loading documents:', error);
       toast({
         title: "Load Error",
-        description: error instanceof Error ? error.message : "Failed to load documents from database.",
+        description: "Failed to load documents from database.",
         variant: "destructive",
       });
     } finally {
@@ -83,6 +77,68 @@ export function DocumentManager() {
   useEffect(() => {
     loadDocuments();
   }, []);
+
+  // Poll for document status updates
+  const pollDocumentStatus = async (documentId: number, filename: string, expectedChunks: number, processingTime?: number) => {
+    let attempts = 0;
+    const maxAttempts = 60; // Poll for up to 60 seconds for large documents
+    const pollInterval = 1000; // Poll every second
+    
+    const poll = async () => {
+      attempts++;
+      
+      try {
+        const response = await fetch(`http://35.209.113.236:3001/api/documents/${documentId}`);
+        const data: ApiResponse<CodeDocument> = await response.json();
+        
+        if (data.success && data.document) {
+          const doc = data.document;
+          
+          // Update document in state
+          setDocuments(prev => prev.map(d => 
+            d.id === documentId ? { ...d, ...doc } : d
+          ));
+          
+          // Check if processing is complete
+          if (doc.processing_status === 'completed') {
+            toast({
+              title: "Upload Successful",
+              description: `${filename} uploaded successfully. ${doc.total_chunks || expectedChunks} chunks created${processingTime ? ` in ${processingTime}ms` : ''}.`,
+            });
+            return; // Stop polling
+          } else if (doc.processing_status === 'failed') {
+            toast({
+              title: "Processing Failed",
+              description: `Failed to process ${filename}. Please try again.`,
+              variant: "destructive",
+            });
+            // Update failed document status but keep in list for visibility
+            setDocuments(prev => prev.map(d => 
+              d.id === documentId ? { ...d, processing_status: 'failed' } : d
+            ));
+            return; // Stop polling
+          }
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+      
+      // Continue polling if not complete and within max attempts
+      if (attempts < maxAttempts) {
+        setTimeout(poll, pollInterval);
+      } else {
+        // Final refresh after max attempts - document might still be processing
+        toast({
+          title: "Processing Taking Longer",
+          description: `${filename} is still being processed. The page will refresh to check status.`,
+        });
+        await loadDocuments();
+      }
+    };
+    
+    // Start polling after a longer delay to allow backend to update status
+    setTimeout(poll, 1500); // Increased from 500ms to 1500ms
+  };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -106,13 +162,27 @@ export function DocumentManager() {
         const data = await response.json();
         
         if (data.success) {
-          toast({
-            title: "Upload Successful",
-            description: `${file.name} uploaded successfully. ${data.total_chunks} chunks created in ${data.processing_time_ms}ms.`,
-          });
+          // Immediately add document to UI with processing status
+          const newDoc: CodeDocument = {
+            id: data.document_id,
+            filename: data.filename,
+            original_filename: data.filename,
+            file_size: file.size,
+            mime_type: file.type,
+            upload_date: new Date().toISOString(),
+            processing_status: 'processing',
+            total_chunks: 0,
+            actual_chunks: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
           
-          // Refresh document list to show new document
-          await loadDocuments();
+          // Add to documents list immediately
+          setDocuments(prev => [newDoc, ...prev]);
+          
+          // Start polling for status updates
+          pollDocumentStatus(data.document_id, file.name, data.total_chunks, data.processing_time_ms);
+          
         } else {
           if (response.status === 409) {
             toast({
