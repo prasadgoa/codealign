@@ -226,6 +226,79 @@ curl -X POST "http://172.17.0.1:8081/embed" -H "Content-Type: application/json" 
 - `/tmp/test-new.txt` - Create new test content for upload testing
 - `/tmp/ncfd.pdf` - Original PDF document for testing
 
-## When I change the files in the rag-api directory, I do the following:
-sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
-sudo systemctl restart rag-api
+## Special instructions
+1.
+~codealign/rag-api is the directory for source file for the services.
+Do sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
+and deploy by sudo systemctl restart rag-api
+
+2. Don't attempt to kill any process, GC will kill you. Ask me to kill instead!
+
+## When you are bug fixing - calude-code shell is being killed by claude code like below - Please don't do it!! This happened twice.
+> Again failed upload
+
+● Let me check what's happening with the upload. First, let me look at the service logs to see the error:
+
+● Bash(sudo journalctl -u rag-api -f --lines=20)
+  ⎿  Running in the background (down arrow to manage)
+
+● BashOutput(Reading shell output)
+  ⎿  Sep 01 05:14:03 rag-vm systemd[1]: rag-api.service: Deactivated successfully.
+     Sep 01 05:14:03 rag-vm systemd[1]: Stopped RAG API Server.
+     Sep 01 05:14:03 rag-vm systemd[1]: Started RAG API Server.
+     … +21 lines (ctrl+r to expand)
+
+● I can see the issue! The error shows that /home/prasadk directory doesn't exist on the server. The service is
+  running on the rag-vm server, but I was assuming the same directory structure. Let me check what directories
+  exist and fix this:
+
+● Kill Bash(Kill shell: bash_1)
+  ⎿  Shell bash_1 killed
+
+✻ Shenaniganing… (esc to interrupt)
+  ⎿  Tip: Start with small features or bug fixes, tell Claude to propose a plan, and verify its suggested edits
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts
+374 | `+await Z.crypto.sha256DigestHex(F),q=await Bu5(Z.crypto,Z.securityCredentials.secretAccessKey,J,Z.region,Y),N=await RY0(Z.crypto,q,D),E=`${fRG} Credential=${Z.securityCredentials.accessKeyId}/${w}, SignedHeaders=${I}, Signature=${kRG.fromArrayBufferToHex(N)}`;return{amzDate:Q.date?void 0:B,authorizationHeader:E,canonicalQuerystring:Z.canonicalQuerystring}}});var uRG=C((Un)=>{var dM=Un&&Un.__classPrivateFieldGet||function(Z,G,W,Y){if(W==="a"&&!Y)throw new TypeError("Private accessor was defined without a getter");if(typeof G==="function"?Z!==G||!Y:!G.has(Z))throw new TypeError("Cannot read private member from an object whose class did not declare it");return W==="m"?Y:W==="a"?Y.call(Z):Y?Y.value:G.get(Z)},bU,j41,bRG,hRG,eN0,v41;Object.defineProperty(Un,"__esModule",{value:!0});Un.DefaultAwsSecurityCredentialsSupplier=void 0;class gRG{constructor(Z){bU.add(this),this.regionUrl=Z.regionUrl,this.securityCredentialsUrl=Z.securityCredentialsUrl,this.imdsV2SessionTokenUrl=Z.imdsV2SessionTokenUrl,this.additionalGaxi | ... truncated 
+375 | To learn more about authentication and Google APIs, visit:
+376 | https://cloud.google.com/docs/authentication/getting-started`,NO_CREDENTIALS_FOUND:`Unable to find credentials in current environment.
+377 | To learn more about authentication and Google APIs, visit:
+378 | https://cloud.google.com/docs/authentication/getting-started`,NO_ADC_FOUND:"Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.",NO_UNIVERSE_DOMAIN_FOUND:`Unable to detect a Universe Domain in the current environment.
+379 | https://cloud.google.com/compute/docs/metadata/predefined-metadata-keys`};class e41{get isGCE(){return this.checkIsGCE}constructor(Z={}){if(Qy.add(this),this.checkIsGCE=void 0,this.jsonContent=null,this.cachedCredential=null,Ln.set(this,null),this.clientOptions={},this._cachedProjectId=Z.projectId||null,this.cachedCredential=Z.authClient||null,this.keyFilename=Z.keyFilename||Z.keyFile,this.scopes=Z.scopes,this.clientOptions=Z.clientOptions||{},this.jsonContent=Z.credentials||null,this.apiKey=Z.apiKey||this.clientOptions.apiKey||null,this.apiKey&&(this.jsonContent||this.clientOptions.credentials))throw new RangeError(Q7.GoogleAuthExceptionMessages.API_KEY_WITH_CREDENTIALS);if(Z.universeDomain)this.clientOptions.universeDomain=Z.universeDomain}setGapicJWTValues(Z){Z.defaultServicePath=this.defaultServicePath,Z.useJWTAccessWithScope=this.useJWTAccessWithScope,Z.defaultScopes=this.defaultScopes}getProjectId(Z){if(Z)this.getProjectIdAsync().then((G)=>Z(null,G),Z);else return this.getProjectIdAsync()}async getProje | ... truncated 
+
+SystemError: kill() failed: EPERM: Operation not permitted
+ syscall: "kill",
+   errno: 1,
+    code: "EPERM"
+
+      at QPG (/$bunfs/root/claude:379:19786)
+      at <anonymous> (/$bunfs/root/claude:379:19658)
+      at forEach (1:11)
+      at <anonymous> (/$bunfs/root/claude:379:19633)
+      at forEach (1:11)
+      at BPG (/$bunfs/root/claude:379:19605)
+      at <anonymous> (/$bunfs/root/claude:379:19532)
+      at Q (/$bunfs/root/claude:379:20015)
+      at emit (node:events:98:22)
+
+Bun v1.2.19 (Linux x64 baseline)
+prasadk@rag-vm:~/codealign$ Read from remote host 35.209.113.236: Connection reset by peer
+Connection to 35.209.113.236 closed.
+client_loop: send disconnect: Broken pipe
+# End of special instrction 2.
+
+# Here is the shared TODO list of bug fixes and features. As we work and get these done, I will mark them done.
+
+- UI enchancements for Document Manager panel
+    1. Remove the refresh button above the remove all button, not sure what this is for (Done)
+    2. The branding at the top is adhoc - improve it if you can. (Done)
+- Let make sure the document search function is working
+    1. Reconsider if using n8n makes sense anymore
+    2. If it doesn't implement n8n document upload workflow in node and use that instead
+    3. Fix bug to make sure the search works realiably!
+
+
+

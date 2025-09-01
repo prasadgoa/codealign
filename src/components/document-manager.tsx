@@ -43,7 +43,6 @@ export function DocumentManager() {
   const [loading, setLoading] = useState(true);
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const [showRemoveAllDialog, setShowRemoveAllDialog] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [deletingDocument, setDeletingDocument] = useState<number | null>(null);
   const [deletingAll, setDeletingAll] = useState(false);
   const { toast } = useToast();
@@ -51,7 +50,6 @@ export function DocumentManager() {
   // Load documents from database
   const loadDocuments = async () => {
     try {
-      setRefreshing(true);
       const response = await fetch('http://35.209.113.236:3001/api/documents');
       const data: ApiResponse<CodeDocument> = await response.json();
       
@@ -69,7 +67,6 @@ export function DocumentManager() {
       });
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   };
 
@@ -284,9 +281,13 @@ export function DocumentManager() {
   };
 
   const viewDocument = (doc: CodeDocument) => {
+    // Open document in new tab/window
+    const downloadUrl = `http://35.209.113.236:3001/api/documents/${doc.id}/download`;
+    window.open(downloadUrl, '_blank');
+    
     toast({
-      title: "Document Details",
-      description: `${doc.filename} - ${doc.total_chunks} chunks, ${(doc.file_size / (1024 * 1024)).toFixed(1)}MB`,
+      title: "Opening Document",
+      description: `Opening ${doc.original_filename} in new tab`,
     });
   };
 
@@ -335,18 +336,6 @@ export function DocumentManager() {
                 Upload compliance documents (PDF, DOCX, TXT) to build your searchable knowledge base. Documents are processed and indexed for semantic search.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={loadDocuments}
-              disabled={refreshing}
-            >
-              {refreshing ? (
-                <RefreshCw className="h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="h-4 w-4" />
-              )}
-            </Button>
           </div>
         </CardHeader>
         <CardContent>
@@ -442,9 +431,11 @@ export function DocumentManager() {
                 Upload compliance documents to start building your searchable knowledge base.
               </p>
               <label htmlFor="file-upload-empty" className="cursor-pointer">
-                <Button variant="outline">
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add First Document
+                <Button variant="outline" asChild>
+                  <span>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add First Document
+                  </span>
                 </Button>
               </label>
               <input

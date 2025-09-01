@@ -5,7 +5,12 @@ const cors = require('cors');
 const FormData = require('form-data');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs').promises;
+const path = require('path');
 const DocumentDatabase = require('./database.js');
+
+// Document storage directory
+const DOCUMENTS_DIR = '/opt/rag-api/uploads';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -35,6 +40,42 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     service: 'RAG API Server'
   });
+});
+
+// Serve document files
+app.get('/api/documents/:id/download', async (req, res) => {
+  try {
+    const documentId = parseInt(req.params.id);
+    const document = await DocumentDatabase.getDocumentById(documentId);
+    
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+
+    if (!document.file_path || !await fs.access(document.file_path).then(() => true).catch(() => false)) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document file not found on disk'
+      });
+    }
+
+    // Set appropriate headers
+    res.setHeader('Content-Disposition', `inline; filename="${document.original_filename}"`);
+    res.setHeader('Content-Type', document.mime_type || 'application/octet-stream');
+    
+    // Stream the file
+    const fileStream = require('fs').createReadStream(document.file_path);
+    fileStream.pipe(res);
+  } catch (error) {
+    console.error('Error serving document:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to serve document'
+    });
+  }
 });
 
 // Get all documents
@@ -107,6 +148,15 @@ app.delete('/api/documents/:id', async (req, res) => {
   try {
     const documentId = parseInt(req.params.id);
     
+    // Get document info first to retrieve file path
+    const document = await DocumentDatabase.getDocumentById(documentId);
+    if (!document) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+    
     // Delete from database and get vector IDs
     const result = await DocumentDatabase.deleteDocument(documentId);
     
@@ -134,6 +184,17 @@ app.delete('/api/documents/:id', async (req, res) => {
       }
     }
     
+    // Delete file from disk
+    if (document.file_path) {
+      try {
+        await fs.unlink(document.file_path);
+        console.log(`Deleted file: ${document.file_path}`);
+      } catch (fileError) {
+        console.error(`Failed to delete file ${document.file_path}:`, fileError.message);
+        // Don't fail the entire operation if file cleanup fails
+      }
+    }
+    
     res.json({
       success: true,
       message: 'Document deleted successfully',
@@ -153,6 +214,10 @@ app.delete('/api/documents/:id', async (req, res) => {
 // Delete all documents
 app.delete('/api/documents', async (req, res) => {
   try {
+    // Get all document file paths before deletion
+    const filePathsResult = await DocumentDatabase.pool.query('SELECT file_path FROM documents WHERE file_path IS NOT NULL');
+    const filePaths = filePathsResult.rows.map(row => row.file_path);
+    
     // Get document count before deletion
     const countResult = await DocumentDatabase.pool.query('SELECT COUNT(*) as count FROM documents');
     const documentCount = parseInt(countResult.rows[0].count);
@@ -202,12 +267,26 @@ app.delete('/api/documents', async (req, res) => {
       }
     }
     
+    // Delete all files from disk
+    let deletedFiles = 0;
+    for (const filePath of filePaths) {
+      try {
+        await fs.unlink(filePath);
+        deletedFiles++;
+        console.log(`Deleted file: ${filePath}`);
+      } catch (fileError) {
+        console.error(`Failed to delete file ${filePath}:`, fileError.message);
+        // Continue with other files even if one fails
+      }
+    }
+    
     res.json({
       success: true,
       message: 'All documents deleted successfully',
       deletedDocuments: documentCount,
       deletedChunks: result.vectorIds?.length || 0,
-      deletedVectors: deletedVectorCount
+      deletedVectors: deletedVectorCount,
+      deletedFiles: deletedFiles
     });
   } catch (error) {
     console.error('Error deleting all documents:', error);
@@ -343,6 +422,7 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
 
   const startTime = Date.now();
   let documentId = null;
+  let filePath = null;
 
   try {
     console.log('=== UPLOAD START DEBUG ===');
@@ -365,21 +445,34 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
       });
     }
 
-    // Step 3: Create document record in database
+    // Step 3: Save file to disk
+    const fileExtension = path.extname(req.file.originalname);
+    const safeFilename = `${documentId || Date.now()}_${crypto.randomBytes(8).toString('hex')}${fileExtension}`;
+    filePath = path.join(DOCUMENTS_DIR, safeFilename);
+    
+    // Ensure directory exists
+    await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
+    
+    // Save file to disk
+    await fs.writeFile(filePath, req.file.buffer);
+    console.log(`File saved to: ${filePath}`);
+
+    // Step 4: Create document record in database
     const documentData = {
       filename: req.file.originalname,
       originalFilename: req.file.originalname,
       fileSize: req.file.buffer.length,
       mimeType: req.file.mimetype,
-      fileHash: fileHash
+      fileHash: fileHash,
+      filePath: filePath
     };
     
     const createResult = await DocumentDatabase.createDocument(documentData);
     documentId = createResult.id || createResult;
     console.log('Document created with ID:', documentId);
-    await DocumentDatabase.logProcessingStep(documentId, 'upload', 'completed', 'File uploaded successfully');
+    await DocumentDatabase.logProcessingStep(documentId, 'upload', 'completed', 'File uploaded and saved successfully');
 
-    // Step 4: Extract text with Tika
+    // Step 5: Extract text with Tika
     console.log(`Processing document ${documentId}: Extracting text...`);
     await DocumentDatabase.logProcessingStep(documentId, 'extraction', 'started');
     
@@ -403,7 +496,7 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     await DocumentDatabase.logProcessingStep(documentId, 'extraction', 'completed', 
       `Extracted ${extractedText.length} characters`);
 
-    // Step 5: Chunk the text
+    // Step 6: Chunk the text
     console.log(`Processing document ${documentId}: Chunking text...`);
     await DocumentDatabase.logProcessingStep(documentId, 'chunking', 'started');
     
@@ -441,7 +534,7 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     await DocumentDatabase.logProcessingStep(documentId, 'chunking', 'completed', 
       `Created ${chunks.length} chunks`);
 
-    // Step 6: Generate embeddings and store in Qdrant
+    // Step 7: Generate embeddings and store in Qdrant
     console.log(`Processing document ${documentId}: Generating embeddings...`);
     await DocumentDatabase.logProcessingStep(documentId, 'embedding', 'started');
 
@@ -565,7 +658,7 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     await DocumentDatabase.logProcessingStep(documentId, 'embedding', 'completed', 
       `Stored ${vectorPoints.length} vectors in Qdrant`);
 
-    // Step 7: Store chunk metadata in database
+    // Step 8: Store chunk metadata in database
     console.log(`Processing document ${documentId}: Storing chunk metadata...`);
     await DocumentDatabase.logProcessingStep(documentId, 'storage', 'started');
 
@@ -608,6 +701,16 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
 
   } catch (error) {
     console.error('Document processing error:', error);
+    
+    // Cleanup: remove saved file if processing failed
+    if (filePath) {
+      try {
+        await fs.unlink(filePath);
+        console.log(`Cleaned up failed upload file: ${filePath}`);
+      } catch (cleanupError) {
+        console.error(`Failed to cleanup file ${filePath}:`, cleanupError.message);
+      }
+    }
     
     if (documentId) {
       await DocumentDatabase.updateDocumentStatus(documentId, 'failed');

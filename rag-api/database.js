@@ -36,19 +36,20 @@ class DocumentDatabase {
       fileSize,
       mimeType,
       fileHash,
+      filePath = null,
       extractedTextLength = null,
       totalPages = null
     } = documentData;
 
     const query = `
       INSERT INTO documents (
-        filename, original_filename, file_size, mime_type, file_hash,
+        filename, original_filename, file_size, mime_type, file_hash, file_path,
         extracted_text_length, total_pages, processing_status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing')
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing')
       RETURNING *
     `;
     
-    const values = [filename, originalFilename, fileSize, mimeType, fileHash, extractedTextLength, totalPages];
+    const values = [filename, originalFilename, fileSize, mimeType, fileHash, filePath, extractedTextLength, totalPages];
     const result = await pool.query(query, values);
     return result.rows[0];
   }
