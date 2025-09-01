@@ -4,6 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const FormData = require('form-data');
 const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
 const DocumentDatabase = require('./database.js');
 
 const app = express();
@@ -105,12 +106,40 @@ app.get('/api/documents/:id', async (req, res) => {
 app.delete('/api/documents/:id', async (req, res) => {
   try {
     const documentId = parseInt(req.params.id);
+    
+    // Delete from database and get vector IDs
     const result = await DocumentDatabase.deleteDocument(documentId);
+    
+    let deletedVectorCount = 0;
+    
+    // Delete vectors from Qdrant if any exist
+    if (result.vectorIds && result.vectorIds.length > 0) {
+      console.log(`Deleting ${result.vectorIds.length} vectors from Qdrant...`);
+      
+      try {
+        const qdrantResponse = await axios.post(
+          'http://172.17.0.1:6333/collections/compliance_docs/points/delete',
+          { points: result.vectorIds },
+          { 
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 10000
+          }
+        );
+        
+        console.log('Qdrant delete response:', qdrantResponse.data);
+        deletedVectorCount = result.vectorIds.length;
+      } catch (qdrantError) {
+        console.error('Failed to delete vectors from Qdrant:', qdrantError.message);
+        // Don't fail the entire operation if Qdrant cleanup fails
+      }
+    }
     
     res.json({
       success: true,
       message: 'Document deleted successfully',
-      deletedVectors: result.deletedVectors || 0
+      deletedDocument: result.deletedDocument?.filename,
+      deletedChunks: result.vectorIds?.length || 0,
+      deletedVectors: deletedVectorCount
     });
   } catch (error) {
     console.error('Error deleting document:', error);
@@ -124,13 +153,61 @@ app.delete('/api/documents/:id', async (req, res) => {
 // Delete all documents
 app.delete('/api/documents', async (req, res) => {
   try {
+    // Get document count before deletion
+    const countResult = await DocumentDatabase.pool.query('SELECT COUNT(*) as count FROM documents');
+    const documentCount = parseInt(countResult.rows[0].count);
+    
+    // Delete from database and get vector IDs
     const result = await DocumentDatabase.deleteAllDocuments();
+    
+    let deletedVectorCount = 0;
+    
+    // Delete vectors from Qdrant if any exist
+    if (result.vectorIds && result.vectorIds.length > 0) {
+      console.log(`Deleting ${result.vectorIds.length} vectors from Qdrant...`);
+      
+      try {
+        // For large deletions, it's more efficient to recreate the collection
+        if (result.vectorIds.length > 100) {
+          console.log('Large deletion detected, recreating Qdrant collection...');
+          
+          // Delete collection
+          await axios.delete('http://172.17.0.1:6333/collections/compliance_docs');
+          
+          // Recreate collection
+          await axios.put(
+            'http://172.17.0.1:6333/collections/compliance_docs',
+            { vectors: { size: 384, distance: 'Cosine' } },
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+          
+          deletedVectorCount = result.vectorIds.length;
+        } else {
+          // Delete individual points
+          const qdrantResponse = await axios.post(
+            'http://172.17.0.1:6333/collections/compliance_docs/points/delete',
+            { points: result.vectorIds },
+            { 
+              headers: { 'Content-Type': 'application/json' },
+              timeout: 30000
+            }
+          );
+          
+          console.log('Qdrant delete response:', qdrantResponse.data);
+          deletedVectorCount = result.vectorIds.length;
+        }
+      } catch (qdrantError) {
+        console.error('Failed to delete vectors from Qdrant:', qdrantError.message);
+        // Don't fail the entire operation if Qdrant cleanup fails
+      }
+    }
     
     res.json({
       success: true,
       message: 'All documents deleted successfully',
-      deletedDocuments: result.deletedDocuments || 0,
-      deletedVectors: result.deletedVectors || 0
+      deletedDocuments: documentCount,
+      deletedChunks: result.vectorIds?.length || 0,
+      deletedVectors: deletedVectorCount
     });
   } catch (error) {
     console.error('Error deleting all documents:', error);
@@ -369,61 +446,90 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     await DocumentDatabase.logProcessingStep(documentId, 'embedding', 'started');
 
     const vectorPoints = [];
+    const storedVectorIds = []; // Track stored vectors for cleanup on failure
     
-    console.log('=== EMBEDDING LOOP START ===');
+    console.log('=== EMBEDDING BATCH START ===');
     console.log('About to process chunks:', enrichedChunks.length);
     
-    for (let i = 0; i < enrichedChunks.length; i++) {
-      const chunk = enrichedChunks[i];
-      console.log(`Processing chunk ${i + 1}/${enrichedChunks.length}`);
-      console.log(`Chunk ${i} text length:`, chunk.text.length);
+    // Process embeddings in batches for better performance
+    const batchSize = 10;
+    for (let batchStart = 0; batchStart < enrichedChunks.length; batchStart += batchSize) {
+      const batchEnd = Math.min(batchStart + batchSize, enrichedChunks.length);
+      const batchChunks = enrichedChunks.slice(batchStart, batchEnd);
+      
+      console.log(`Processing batch ${Math.floor(batchStart/batchSize) + 1}/${Math.ceil(enrichedChunks.length/batchSize)} (chunks ${batchStart + 1}-${batchEnd})`);
       
       try {
-        // Get embedding from TEI
-        const embeddingResponse = await axios.post('http://172.17.0.1:8081/embed', {
-          inputs: chunk.text,
-          truncate: true
-        }, {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 30000
+        // Process batch of embeddings in parallel
+        const embeddingPromises = batchChunks.map(async (chunk, batchIndex) => {
+          const globalIndex = batchStart + batchIndex;
+          const embeddingResponse = await axios.post('http://172.17.0.1:8081/embed', {
+            inputs: chunk.text,
+            truncate: true
+          }, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 30000
+          });
+          
+          const vector = embeddingResponse.data[0]; // TEI returns [[vector]]
+          
+          if (!Array.isArray(vector)) {
+            throw new Error(`Invalid vector format for chunk ${globalIndex}: expected array, got ${typeof vector}`);
+          }
+          
+          return {
+            index: globalIndex,
+            vector: vector,
+            chunk: chunk
+          };
         });
-
-        console.log(`TEI response for chunk ${i}:`, {
-          status: 'success',
-          dataType: typeof embeddingResponse.data,
-          isArray: Array.isArray(embeddingResponse.data),
-          length: embeddingResponse.data?.length,
-          firstElementLength: embeddingResponse.data[0]?.length
-        });
-
-        const vector = embeddingResponse.data[0]; // TEI returns [[vector]]
         
-        if (!Array.isArray(vector)) {
-          throw new Error(`Invalid vector format for chunk ${i}: expected array, got ${typeof vector}`);
+        const batchResults = await Promise.all(embeddingPromises);
+        
+        // Add results to vectorPoints with UUID IDs
+        for (const result of batchResults) {
+          const vectorId = uuidv4(); // Generate UUID for Qdrant
+          vectorPoints.push({
+            id: vectorId, // Use UUID for Qdrant compatibility
+            vector: result.vector,
+            payload: {
+              doc_id: result.chunk.doc_id,
+              chunk_id: result.chunk.chunk_id,
+              text: result.chunk.text,
+              chunk_index: result.chunk.chunk_index,
+              start_offset: result.chunk.start_offset,
+              end_offset: result.chunk.end_offset,
+              chunk_length: result.chunk.chunk_length,
+              total_chunks: result.chunk.total_chunks,
+              filename: result.chunk.filename,
+              processed_date: result.chunk.processed_date,
+              db_document_id: documentId, // Add document ID for reference
+              vector_index: result.index   // Keep original index for ordering
+            }
+          });
+          storedVectorIds.push(vectorId);
         }
         
-        vectorPoints.push({
-          id: i,
-          vector: vector,
-          payload: {
-            doc_id: chunk.doc_id,
-            chunk_id: chunk.chunk_id,
-            text: chunk.text,
-            chunk_index: chunk.chunk_index,
-            start_offset: chunk.start_offset,
-            end_offset: chunk.end_offset,
-            chunk_length: chunk.chunk_length,
-            total_chunks: chunk.total_chunks,
-            filename: chunk.filename,
-            processed_date: chunk.processed_date
-          }
-        });
-        
-        console.log(`Successfully created vector point ${i} with vector length:`, vector.length);
+        console.log(`Batch processed successfully: ${batchResults.length} embeddings generated`);
         
       } catch (embeddingError) {
-        console.error(`Error processing chunk ${i}:`, embeddingError.message);
-        throw new Error(`Embedding failed for chunk ${i}: ${embeddingError.message}`);
+        console.error(`Error processing batch starting at ${batchStart}:`, embeddingError.message);
+        
+        // Cleanup any already stored vectors on failure
+        if (storedVectorIds.length > 0) {
+          try {
+            console.log(`Cleaning up ${storedVectorIds.length} orphaned vectors...`);
+            await axios.post(
+              'http://172.17.0.1:6333/collections/compliance_docs/points/delete',
+              { points: storedVectorIds },
+              { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+            );
+          } catch (cleanupError) {
+            console.error('Failed to cleanup orphaned vectors:', cleanupError.message);
+          }
+        }
+        
+        throw new Error(`Embedding batch failed at chunks ${batchStart}-${batchEnd}: ${embeddingError.message}`);
       }
     }
 
@@ -463,15 +569,19 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     console.log(`Processing document ${documentId}: Storing chunk metadata...`);
     await DocumentDatabase.logProcessingStep(documentId, 'storage', 'started');
 
-    // FIXED: Use proper chunk_index values from enrichedChunks
-    const chunkData = enrichedChunks.map((chunk, index) => ({
-      chunk_index: chunk.chunk_index,  // Now properly set in enrichedChunks
-      vector_id: index.toString(),     // Use map index for vector_id
-      text: chunk.text,
-      chunk_length: chunk.chunk_length,
-      start_offset: chunk.start_offset,
-      end_offset: chunk.end_offset
-    }));
+    // Map vector IDs from vectorPoints to chunk data
+    const chunkData = enrichedChunks.map((chunk, index) => {
+      // Find the corresponding vector point by matching the index
+      const vectorPoint = vectorPoints.find(vp => vp.payload.vector_index === index);
+      return {
+        chunk_index: chunk.chunk_index,  
+        vector_id: vectorPoint ? vectorPoint.id : uuidv4(),  // Use the UUID from vectorPoints
+        text: chunk.text,
+        chunk_length: chunk.chunk_length,
+        start_offset: chunk.start_offset,
+        end_offset: chunk.end_offset
+      };
+    });
 
     console.log('=== DATABASE STORAGE DEBUG ===');
     console.log('Chunk data count:', chunkData.length);
