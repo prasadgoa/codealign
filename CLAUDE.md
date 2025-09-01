@@ -232,7 +232,7 @@ curl -X POST "http://172.17.0.1:8081/embed" -H "Content-Type: application/json" 
 Do sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
 and deploy by sudo systemctl restart rag-api
 
-2. Don't attempt to kill any process, GC will kill you. Ask me to kill instead!
+2. Don't attempt to kill the shell that you are running in. That will kill you, lose context, and create work for me. 
 
 ## When you are bug fixing - calude-code shell is being killed by claude code like below - Please don't do it!! This happened twice.
 > Again failed upload
@@ -295,10 +295,8 @@ client_loop: send disconnect: Broken pipe
 - UI enchancements for Document Manager panel
     1. Remove the refresh button above the remove all button, not sure what this is for (Done)
     2. The branding at the top is adhoc - improve it if you can. (Done)
-- Let make sure the document search function is working
-    1. Reconsider if using n8n makes sense anymore
-    2. If it doesn't implement n8n document upload workflow in node and use that instead
-    3. Fix bug to make sure the search works realiably!
-
-
-
+- Document Search
+    1. Reconsider if using n8n makes sense anymore (Done)
+    2. If it doesn't implement n8n document upload workflow in node and use that instead (Done)
+    3. Fix bug to make sure the search works realiably! (Done)
+    4. Feature - Attribution. When answering a query, the system not only give answer, but also give attribution with document name and page number or section etc.,

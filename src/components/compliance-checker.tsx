@@ -6,11 +6,19 @@ import { Badge } from '@/components/ui/badge';
 import { CheckCircle, XCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
+interface ComplianceSource {
+  document: string;
+  chunk_index: number;
+  relevance_score: string;
+  excerpt: string;
+}
+
 interface ComplianceResult {
   answer: string;
   found_chunks: number;
   query: string;
   status: string;
+  sources?: ComplianceSource[];
 }
 
 export function ComplianceChecker() {
@@ -53,7 +61,8 @@ export function ComplianceChecker() {
           answer: data.answer,
           found_chunks: data.found_chunks,
           query: data.query,
-          status: data.status
+          status: data.status,
+          sources: data.sources
         });
         console.log('Result set:', result); 
         toast({
@@ -146,8 +155,36 @@ export function ComplianceChecker() {
               <p className="text-foreground leading-relaxed">{result.answer}</p>
             </div>
             
-            <div className="text-sm text-muted-foreground">
-              <span>Source: {result.found_chunks} relevant document section{result.found_chunks !== 1 ? 's' : ''} analyzed</span>
+            {result.sources && result.sources.length > 0 && (
+              <div className="space-y-3">
+                <h4 className="font-semibold text-foreground">Source Documents:</h4>
+                <div className="space-y-2">
+                  {result.sources.map((source, index) => (
+                    <div key={index} className="p-3 rounded-lg bg-muted/50 border border-border/50">
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="text-xs">
+                            {source.relevance_score} match
+                          </Badge>
+                          <span className="text-sm font-medium text-foreground">
+                            {source.document}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            (Section {source.chunk_index})
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-sm text-muted-foreground italic">
+                        "{source.excerpt}"
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <div className="text-sm text-muted-foreground pt-2 border-t border-border/50">
+              <span>Total: {result.found_chunks} relevant document section{result.found_chunks !== 1 ? 's' : ''} analyzed</span>
             </div>
           </CardContent>
         </Card>

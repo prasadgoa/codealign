@@ -361,7 +361,7 @@ app.post('/api/internal/store-chunks', async (req, res) => {
   }
 });
 
-// Direct query endpoint (bypasses n8n)  
+// Query endpoint (for n8n compatibility)
 app.post('/api/query', async (req, res) => {
   try {
     const { query } = req.body;
@@ -373,179 +373,39 @@ app.post('/api/query', async (req, res) => {
       });
     }
 
-    console.log('=== QUERY START DEBUG ===');
-    console.log('Query:', query);
-    console.log('========================');
-
-    // Step 1: Generate embedding for the query
-    console.log('Generating query embedding...');
-    const embeddingResponse = await axios.post(
-      'http://172.17.0.1:8081/embed',
-      {
-        inputs: query,
-        truncate: true
-      },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
-      }
-    );
-
-    const queryEmbedding = embeddingResponse.data[0];
-    console.log('Query embedding generated, dimension:', queryEmbedding.length);
-
-    // Step 2: Search Qdrant for similar vectors
-    console.log('Searching Qdrant for similar chunks...');
-    const qdrantSearchResponse = await axios.post(
-      'http://172.17.0.1:6333/collections/compliance_docs/points/search',
-      {
-        vector: queryEmbedding,
-        limit: 5,  // Get top 5 most relevant chunks
-        with_payload: true,
-        with_vector: false
-      },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
-      }
-    );
-
-    const searchResults = qdrantSearchResponse.data.result || [];
-    console.log(`Found ${searchResults.length} relevant chunks`);
-
-    if (searchResults.length === 0) {
-      return res.json({
-        success: true,
-        query: query,
-        answer: "I couldn't find any relevant information in the uploaded documents to answer your question. Please make sure you have uploaded documents related to your query.",
-        found_chunks: 0,
-        sources: [],
-        status: 'no_results'
-      });
-    }
-
-    // Step 3: Get chunk details from database
-    const chunkIds = searchResults.map(result => result.id);
-    const chunkDetails = await DocumentDatabase.getChunksByVectorIds(chunkIds);
-    
-    // Step 4: Prepare context for LLM
-    const context = searchResults.map((result, index) => {
-      const chunk = chunkDetails.find(c => c.vector_id === result.id);
-      return {
-        text: result.payload.text || chunk?.text || '',
-        score: result.score,
-        document: result.payload.filename || chunk?.filename || 'Unknown',
-        chunk_index: result.payload.chunk_index || chunk?.chunk_index || index
-      };
+    // Call the n8n query webhook
+    const webhookUrl = 'http://localhost:5678/webhook/d9ece4d6-a9da-494b-bb03-caba40eae672';
+    const response = await axios.post(webhookUrl, { query }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 30000
     });
 
-    const contextText = context.map((c, i) => 
-      `[Document: ${c.document}, Section ${c.chunk_index}, Relevance: ${(c.score * 100).toFixed(1)}%]\n${c.text}\n[End of excerpt from ${c.document}]`
-    ).join('\n\n---\n\n');
-
-    console.log('=== CONTEXT DEBUG ===');
-    console.log('Context length:', contextText.length);
-    console.log('Number of sources:', context.length);
-    console.log('Context preview:', contextText.substring(0, 500));
-    console.log('====================');
-
-    // Step 5: Generate answer using LLM
-    console.log('Generating answer with LLM...');
-    
-    // Escape any problematic characters in the context to prevent JSON issues
-    const safeContextText = contextText
-      .replace(/"/g, '\\"')  // Escape quotes
-      .replace(/\n/g, '\\n')  // Escape newlines
-      .replace(/\r/g, '\\r')  // Escape carriage returns
-      .replace(/\t/g, '\\t'); // Escape tabs
-    
-    const llmPrompt = `Based on the following context from compliance documents, answer the question concisely and directly.
-
-Context:
-${safeContextText}
-
-Question: ${query}
-
-Instructions:
-- Give a direct, clear answer without listing sources or sections
-- Focus on answering what was asked, not listing where information appears
-- If multiple relevant points exist, summarize the key information
-- Keep the response brief and to the point
-
-Answer:`;
-
-    console.log('=== PROMPT DEBUG ===');
-    console.log('Prompt length:', llmPrompt.length);
-    console.log('Prompt preview:', llmPrompt.substring(0, 300));
-    console.log('==================');
-
-    let generatedAnswer;
-    try {
-      const llmResponse = await axios.post(
-        'http://35.209.219.117:8000/v1/chat/completions',
-        {
-          model: 'llama-3.1-8b-instruct',
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a helpful assistant that provides clear, direct answers based on compliance documents. Be concise and focus on answering the question directly.'
-            },
-            {
-              role: 'user',
-              content: llmPrompt
-            }
-          ],
-          max_tokens: 500,  // Increased for more detailed answers
-          temperature: 0.1
-        },
-        {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 120000  // Increased to 2 minutes
-        }
-      );
-      
-      generatedAnswer = llmResponse.data.choices[0].message.content.trim();
-    } catch (llmError) {
-      console.error('LLM service error:', llmError.message);
-      
-      // Fallback: Return context-based answer
-      if (context.length > 0) {
-        generatedAnswer = `Based on the available documents, here are the relevant excerpts for your query "${query}":\n\n` + 
-          context.slice(0, 3).map((c, i) => 
-            `${i + 1}. From "${c.document}": ${c.text.substring(0, 300)}${c.text.length > 300 ? '...' : ''}`
-          ).join('\n\n') + 
-          '\n\n[Note: LLM service temporarily unavailable, showing relevant document excerpts]';
-      } else {
-        generatedAnswer = 'Sorry, I could not find relevant information for your query, and the LLM service is currently unavailable.';
+    // Parse the response (n8n returns text, need to parse JSON)
+    let result;
+    if (typeof response.data === 'string') {
+      try {
+        result = JSON.parse(response.data);
+      } catch (parseError) {
+        result = {
+          answer: response.data,
+          found_chunks: 0,
+          query: query,
+          status: 'success'
+        };
       }
+    } else {
+      result = response.data;
     }
 
-    // Step 6: Format and return response
-    const response = {
+    res.json({
       success: true,
       query: query,
-      answer: generatedAnswer,
-      found_chunks: searchResults.length,
-      sources: context.map(c => ({
-        document: c.document,
-        chunk_index: c.chunk_index,
-        relevance_score: (c.score * 100).toFixed(1) + '%',
-        excerpt: c.text.substring(0, 200) + (c.text.length > 200 ? '...' : '')
-      })),
+      answer: result.results || result.answer || result,
+      found_chunks: result.found_chunks || 0,
       status: 'success'
-    };
-
-    console.log('=== QUERY COMPLETE ===');
-    console.log(`Answer length: ${generatedAnswer.length} chars`);
-    console.log(`Sources: ${context.length}`);
-    console.log('====================');
-
-    res.json(response);
-
+    });
   } catch (error) {
     console.error('Query error:', error);
-    console.error('Error details:', error.response?.data || error.message);
-    
     res.status(500).json({
       success: false,
       error: 'Query processing failed',

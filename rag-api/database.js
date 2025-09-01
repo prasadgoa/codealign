@@ -227,6 +227,30 @@ class DocumentDatabase {
     return result.rows[0];
   }
 
+  // Get chunks by vector IDs (for query processing)
+  static async getChunksByVectorIds(vectorIds) {
+    if (!vectorIds || vectorIds.length === 0) {
+      return [];
+    }
+    
+    const placeholders = vectorIds.map((_, index) => `$${index + 1}`).join(',');
+    const query = `
+      SELECT 
+        dc.vector_id,
+        dc.chunk_text as text,
+        dc.chunk_index,
+        d.original_filename as filename,
+        d.id as document_id
+      FROM document_chunks dc
+      JOIN documents d ON dc.document_id = d.id
+      WHERE dc.vector_id IN (${placeholders})
+      ORDER BY dc.chunk_index
+    `;
+    
+    const result = await pool.query(query, vectorIds);
+    return result.rows;
+  }
+
   // Health check
   static async healthCheck() {
     try {
