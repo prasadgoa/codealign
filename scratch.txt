@@ -1,0 +1,18 @@
+curl -X POST -F "file=@/tmp/ncfd.pdf" http://localhost:3001/api/upload-document-direct
+curl -X POST -F "file=@/tmp/mofire.docx" http://localhost:3001/api/upload-document-direct
+
+
+sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
+sudo systemctl restart rag-api
+
+cd codealign
+npm run build
+# This is usually not needed
+sudo systemctl restart codealign-ui 
+
+
+
+
+~prasadk/utils/resetdb.sh
+
+

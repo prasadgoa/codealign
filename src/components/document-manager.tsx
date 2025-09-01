@@ -25,6 +25,11 @@ interface ApiResponse<T> {
   documents?: T[];
   document?: T;
   error?: string;
+  message?: string;
+  deletedDocument?: string;
+  deletedChunks?: number;
+  deletedVectors?: number;
+  deletedDocuments?: number;
   pagination?: {
     page: number;
     limit: number;
@@ -39,6 +44,8 @@ export function DocumentManager() {
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const [showRemoveAllDialog, setShowRemoveAllDialog] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [deletingDocument, setDeletingDocument] = useState<number | null>(null);
+  const [deletingAll, setDeletingAll] = useState(false);
   const { toast } = useToast();
 
   // Load documents from database
@@ -46,10 +53,16 @@ export function DocumentManager() {
     try {
       setRefreshing(true);
       const response = await fetch('http://35.209.113.236:3001/api/documents');
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data: ApiResponse<CodeDocument> = await response.json();
       
-      if (data.success && data.documents) {
-        setDocuments(data.documents);
+      if (data.success) {
+        // Set documents to empty array if not provided
+        setDocuments(data.documents || []);
       } else {
         throw new Error(data.error || 'Failed to load documents');
       }
@@ -57,7 +70,7 @@ export function DocumentManager() {
       console.error('Error loading documents:', error);
       toast({
         title: "Load Error",
-        description: "Failed to load documents from database.",
+        description: error instanceof Error ? error.message : "Failed to load documents from database.",
         variant: "destructive",
       });
     } finally {
@@ -85,7 +98,7 @@ export function DocumentManager() {
         const formData = new FormData();
         formData.append('file', file);
 
-        const response = await fetch('http://35.209.113.236:3001/api/upload-document', {
+        const response = await fetch('http://35.209.113.236:3001/api/upload-document-direct', {
           method: 'POST',
           body: formData,
         });
@@ -95,7 +108,7 @@ export function DocumentManager() {
         if (data.success) {
           toast({
             title: "Upload Successful",
-            description: `${file.name} uploaded successfully. Document ID: ${data.documentId}`,
+            description: `${file.name} uploaded successfully. ${data.total_chunks} chunks created in ${data.processing_time_ms}ms.`,
           });
           
           // Refresh document list to show new document
@@ -108,7 +121,7 @@ export function DocumentManager() {
               variant: "destructive",
             });
           } else {
-            throw new Error(data.error || 'Upload failed');
+            throw new Error(data.error || data.message || 'Upload failed');
           }
         }
       } catch (error) {
@@ -132,17 +145,19 @@ export function DocumentManager() {
   };
 
   const removeDocument = async (documentId: number, filename: string) => {
+    setDeletingDocument(documentId);
+    
     try {
       const response = await fetch(`http://35.209.113.236:3001/api/documents/${documentId}`, {
         method: 'DELETE',
       });
 
-      const data = await response.json();
+      const data: ApiResponse<CodeDocument> = await response.json();
       
       if (data.success) {
         toast({
           title: "Document Deleted",
-          description: `${filename} and ${data.deletedVectors || 0} vectors removed successfully.`,
+          description: `${data.deletedDocument || filename} removed successfully. Cleaned up ${data.deletedChunks || 0} chunks and ${data.deletedVectors || 0} vectors.`,
         });
         
         // Refresh document list
@@ -157,22 +172,26 @@ export function DocumentManager() {
         description: `Failed to delete ${filename}: ${error instanceof Error ? error.message : 'Unknown error'}`,
         variant: "destructive",
       });
+    } finally {
+      setDeletingDocument(null);
     }
   };
 
   const removeAllDocuments = async () => {
+    setDeletingAll(true);
+    
     try {
       const response = await fetch('http://35.209.113.236:3001/api/documents', {
         method: 'DELETE',
       });
 
-      const data = await response.json();
+      const data: ApiResponse<CodeDocument> = await response.json();
       
       if (data.success) {
         setShowRemoveAllDialog(false);
         toast({
           title: "All Documents Deleted",
-          description: `All documents and ${data.deletedVectors || 0} vectors removed from the system.`,
+          description: `Removed ${data.deletedDocuments || 0} documents, ${data.deletedChunks || 0} chunks, and ${data.deletedVectors || 0} vectors from the system.`,
         });
         
         // Clear local state and refresh
@@ -189,6 +208,8 @@ export function DocumentManager() {
         description: `Failed to delete all documents: ${error instanceof Error ? error.message : 'Unknown error'}`,
         variant: "destructive",
       });
+    } finally {
+      setDeletingAll(false);
     }
   };
 
@@ -289,10 +310,19 @@ export function DocumentManager() {
                 <Button 
                   variant="destructive" 
                   size="lg"
-                  disabled={documents.length === 0}
+                  disabled={documents.length === 0 || deletingAll}
                 >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Remove All
+                  {deletingAll ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      Deleting...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Remove All
+                    </>
+                  )}
                 </Button>
               </DialogTrigger>
               <DialogContent>
@@ -306,8 +336,8 @@ export function DocumentManager() {
                   <Button variant="outline" onClick={() => setShowRemoveAllDialog(false)}>
                     Cancel
                   </Button>
-                  <Button variant="destructive" onClick={removeAllDocuments}>
-                    Remove All Documents
+                  <Button variant="destructive" onClick={removeAllDocuments} disabled={deletingAll}>
+                    {deletingAll ? 'Deleting...' : 'Remove All Documents'}
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -394,9 +424,13 @@ export function DocumentManager() {
                         variant="ghost"
                         size="sm"
                         onClick={() => removeDocument(doc.id, doc.original_filename)}
-                        disabled={uploadingFiles.size > 0}
+                        disabled={deletingDocument === doc.id || uploadingFiles.size > 0}
                       >
-                        <Trash2 className="h-4 w-4 text-destructive" />
+                        {deletingDocument === doc.id ? (
+                          <RefreshCw className="h-4 w-4 animate-spin text-destructive" />
+                        ) : (
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        )}
                       </Button>
                     </div>
                   </div>
