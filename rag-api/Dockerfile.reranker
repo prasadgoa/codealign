@@ -1,0 +1,19 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY reranker_requirements.txt .
+RUN pip install --no-cache-dir -r reranker_requirements.txt
+
+# Copy the service
+COPY reranker_service.py .
+
+# Download the model during build (so it's cached)
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+
+# Expose port
+EXPOSE 8082
+
+# Run the service
+CMD ["python", "reranker_service.py"]

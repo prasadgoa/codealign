@@ -12,7 +12,16 @@ sudo systemctl restart codealign-ui
 
 
 
+#Reset DB
 
 ~prasadk/utils/resetdb.sh
+
+# Create a quick check script
+echo "=== PostgreSQL Document Count ===" && \
+docker exec -it postgres-rag psql -U rag_user -d rag_system -t -c "SELECT COUNT(*) FROM documents;" && \
+echo "=== PostgreSQL Chunk Count ===" && \
+docker exec -it postgres-rag psql -U rag_user -d rag_system -t -c "SELECT COUNT(*) FROM document_chunks;" && \
+echo "=== Qdrant Vector Count ===" && \
+curl -s "http://172.17.0.1:6333/collections/compliance_docs" | grep -o '"points_count":[0-9]*' | cut -d: -f2
 
 

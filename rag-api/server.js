@@ -8,6 +8,14 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 const DocumentDatabase = require('./database.js');
+const { EnhancedChunker, QueryClassifier, PromptEnhancer } = require('./enhancedChunking.js');
+const { RerankClient } = require('./rerankClient.js');
+
+// Initialize enhancement components
+const enhancedChunker = new EnhancedChunker();
+const queryClassifier = new QueryClassifier();
+const promptEnhancer = new PromptEnhancer();
+const rerankClient = new RerankClient();
 
 // Document storage directory
 const DOCUMENTS_DIR = '/opt/rag-api/uploads';
@@ -394,13 +402,13 @@ app.post('/api/query', async (req, res) => {
     const queryEmbedding = embeddingResponse.data[0];
     console.log('Query embedding generated, dimension:', queryEmbedding.length);
 
-    // Step 2: Search Qdrant for similar vectors
+    // Step 2: Search Qdrant for similar vectors (get more for reranking)
     console.log('Searching Qdrant for similar chunks...');
     const qdrantSearchResponse = await axios.post(
       'http://172.17.0.1:6333/collections/compliance_docs/points/search',
       {
         vector: queryEmbedding,
-        limit: 5,  // Get top 5 most relevant chunks
+        limit: 20,  // Get top 20 for reranking
         with_payload: true,
         with_vector: false
       },
@@ -428,56 +436,57 @@ app.post('/api/query', async (req, res) => {
     const chunkIds = searchResults.map(result => result.id);
     const chunkDetails = await DocumentDatabase.getChunksByVectorIds(chunkIds);
     
-    // Step 4: Prepare context for LLM
-    const context = searchResults.map((result, index) => {
+    // Step 4: Prepare documents for reranking
+    const documentsForReranking = searchResults.map((result, index) => {
       const chunk = chunkDetails.find(c => c.vector_id === result.id);
       return {
         text: result.payload.text || chunk?.text || '',
-        score: result.score,
-        document: result.payload.filename || chunk?.filename || 'Unknown',
-        chunk_index: result.payload.chunk_index || chunk?.chunk_index || index
+        metadata: {
+          vector_score: result.score,
+          document: result.payload.filename || chunk?.filename || 'Unknown',
+          chunk_index: result.payload.chunk_index || chunk?.chunk_index || index,
+          vector_id: result.id
+        }
       };
     });
-
-    const contextText = context.map((c, i) => 
-      `[Document: ${c.document}, Section ${c.chunk_index}, Relevance: ${(c.score * 100).toFixed(1)}%]\n${c.text}\n[End of excerpt from ${c.document}]`
-    ).join('\n\n---\n\n');
-
-    console.log('=== CONTEXT DEBUG ===');
-    console.log('Context length:', contextText.length);
-    console.log('Number of sources:', context.length);
-    console.log('Context preview:', contextText.substring(0, 500));
-    console.log('====================');
-
-    // Step 5: Generate answer using LLM
-    console.log('Generating answer with LLM...');
     
-    // Escape any problematic characters in the context to prevent JSON issues
-    const safeContextText = contextText
-      .replace(/"/g, '\\"')  // Escape quotes
-      .replace(/\n/g, '\\n')  // Escape newlines
-      .replace(/\r/g, '\\r')  // Escape carriage returns
-      .replace(/\t/g, '\\t'); // Escape tabs
+    // Step 5: Rerank results using cross-encoder
+    console.log('Reranking results with cross-encoder...');
+    const rerankedResults = await rerankClient.rerank(query, documentsForReranking);
+    console.log(`Reranking complete. Top score: ${rerankedResults[0]?.rerank_score?.toFixed(3)}`);
     
-    const llmPrompt = `Based on the following context from compliance documents, answer the question concisely and directly.
+    // Step 6: Apply dynamic chunk selection
+    const queryType = queryClassifier.classifyQuery(query);
+    const optimalChunkCount = queryClassifier.selectOptimalChunkCount(query, rerankedResults);
+    const selectedChunks = rerankedResults.slice(0, optimalChunkCount);
+    
+    console.log(`Query type: ${queryType}, Selected ${selectedChunks.length} chunks`);
+    
+    // Step 7: Prepare context for LLM
+    const context = selectedChunks.map((chunk, index) => ({
+      text: chunk.text,
+      rerank_score: chunk.rerank_score,
+      vector_score: chunk.metadata.vector_score,
+      document: chunk.metadata.document,
+      chunk_index: chunk.metadata.chunk_index,
+      relevance: (chunk.rerank_score * 100).toFixed(1) + '%'
+    }));
 
-Context:
-${safeContextText}
+    console.log('=== ENHANCED CONTEXT DEBUG ===');
+    console.log('Selected chunks:', selectedChunks.length);
+    console.log('Query type:', queryType);
+    console.log('Top rerank score:', context[0]?.rerank_score?.toFixed(3));
+    console.log('===============================');
 
-Question: ${query}
+    // Step 8: Generate enhanced prompt
+    console.log('Generating enhanced prompt...');
+    const llmPrompt = promptEnhancer.buildEnhancedPrompt(query, selectedChunks, queryType);
 
-Instructions:
-- Give a direct, clear answer without listing sources or sections
-- Focus on answering what was asked, not listing where information appears
-- If multiple relevant points exist, summarize the key information
-- Keep the response brief and to the point
-
-Answer:`;
-
-    console.log('=== PROMPT DEBUG ===');
+    console.log('=== ENHANCED PROMPT DEBUG ===');
     console.log('Prompt length:', llmPrompt.length);
-    console.log('Prompt preview:', llmPrompt.substring(0, 300));
-    console.log('==================');
+    console.log('Query type used:', queryType);
+    console.log('Prompt preview:', llmPrompt.substring(0, 400));
+    console.log('=============================');
 
     let generatedAnswer;
     try {
@@ -520,18 +529,26 @@ Answer:`;
       }
     }
 
-    // Step 6: Format and return response
+    // Step 9: Format enhanced response with improved attribution
     const response = {
       success: true,
       query: query,
+      query_type: queryType,
       answer: generatedAnswer,
-      found_chunks: searchResults.length,
+      chunks_analyzed: searchResults.length,
+      chunks_used: selectedChunks.length,
       sources: context.map(c => ({
         document: c.document,
-        chunk_index: c.chunk_index,
-        relevance_score: (c.score * 100).toFixed(1) + '%',
+        section: c.chunk_index,
+        rerank_relevance: c.relevance,
+        vector_score: (c.vector_score * 100).toFixed(1) + '%',
         excerpt: c.text.substring(0, 200) + (c.text.length > 200 ? '...' : '')
       })),
+      enhancement_info: {
+        reranker_used: true,
+        dynamic_selection: true,
+        enhanced_prompting: true
+      },
       status: 'success'
     };
 
@@ -636,39 +653,39 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     await DocumentDatabase.logProcessingStep(documentId, 'extraction', 'completed', 
       `Extracted ${extractedText.length} characters`);
 
-    // Step 6: Chunk the text
-    console.log(`Processing document ${documentId}: Chunking text...`);
+    // Step 6: Enhanced chunking with LangChain
+    console.log(`Processing document ${documentId}: Enhanced chunking with LangChain...`);
     await DocumentDatabase.logProcessingStep(documentId, 'chunking', 'started');
     
-    const chunks = chunkText(extractedText, {
-      chunkSize: 800,
-      overlap: 100,
-      minChunkSize: 100
-    });
+    const chunks = await enhancedChunker.chunkDocument(extractedText, req.file.originalname);
 
-    console.log('=== CHUNKING DEBUG ===');
-    console.log('Raw chunks created:', chunks.length);
+    console.log('=== ENHANCED CHUNKING DEBUG ===');
+    console.log('LangChain chunks created:', chunks.length);
     console.log('First chunk preview:', chunks[0]?.text?.substring(0, 100));
-    console.log('First chunk length:', chunks[0]?.length);
-    console.log('===================');
+    console.log('First chunk metadata:', chunks[0]?.metadata);
+    console.log('================================');
 
     const enrichedChunks = chunks.map((chunk, index) => ({
       doc_id: docId,
       chunk_id: `${docId}_chunk_${index}`,
       text: chunk.text,
-      chunk_index: index,  // FIXED: Use index from map function
-      start_offset: chunk.start_offset,
-      end_offset: chunk.end_offset,
-      chunk_length: chunk.length,
+      chunk_index: index,
+      start_offset: 0, // LangChain doesn't provide this, set to 0
+      end_offset: chunk.text.length,
+      chunk_length: chunk.text.length,
       total_chunks: chunks.length,
       filename: req.file.originalname,
-      processed_date: new Date().toISOString()
+      processed_date: new Date().toISOString(),
+      // Add enhanced metadata
+      section: chunk.metadata.section,
+      doc_type: chunk.metadata.doc_type,
+      has_requirements: chunk.metadata.has_requirements
     }));
 
     console.log('=== ENRICHED CHUNKS DEBUG ===');
     console.log('Enriched chunks count:', enrichedChunks.length);
-    console.log('First enriched chunk keys:', Object.keys(enrichedChunks[0] || {}));
-    console.log('First enriched chunk index:', enrichedChunks[0]?.chunk_index);
+    console.log('Chunks with sections:', enrichedChunks.filter(c => c.section).length);
+    console.log('Chunks with requirements:', enrichedChunks.filter(c => c.has_requirements).length);
     console.log('============================');
 
     await DocumentDatabase.logProcessingStep(documentId, 'chunking', 'completed', 
