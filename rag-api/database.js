@@ -76,8 +76,8 @@ class DocumentDatabase {
       const insertQuery = `
         INSERT INTO document_chunks (
           document_id, chunk_index, vector_id, chunk_text, chunk_length,
-          page_number, start_offset, end_offset
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          page_number, start_offset, end_offset, section
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `;
       
       for (const chunk of chunks) {
@@ -89,7 +89,8 @@ class DocumentDatabase {
           chunk.chunk_length || chunk.text.length,  // FIXED: use chunk_length if available
           chunk.page_number || null,
           chunk.start_offset || null,
-          chunk.end_offset || null
+          chunk.end_offset || null,
+          chunk.section || null     // section name if available
         ]);
       }
       
@@ -239,6 +240,8 @@ class DocumentDatabase {
         dc.vector_id,
         dc.chunk_text as text,
         dc.chunk_index,
+        dc.page_number,
+        dc.section,
         d.original_filename as filename,
         d.id as document_id
       FROM document_chunks dc

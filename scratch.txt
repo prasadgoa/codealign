@@ -25,3 +25,7 @@ echo "=== Qdrant Vector Count ===" && \
 curl -s "http://172.17.0.1:6333/collections/compliance_docs" | grep -o '"points_count":[0-9]*' | cut -d: -f2
 
 
+./check_system_health.sh
+
+./check_processing.sh
+

@@ -10,12 +10,14 @@ const path = require('path');
 const DocumentDatabase = require('./database.js');
 const { EnhancedChunker, QueryClassifier, PromptEnhancer } = require('./enhancedChunking.js');
 const { RerankClient } = require('./rerankClient.js');
+const { PageExtractor } = require('./pageExtractor.js');
 
 // Initialize enhancement components
 const enhancedChunker = new EnhancedChunker();
 const queryClassifier = new QueryClassifier();
 const promptEnhancer = new PromptEnhancer();
 const rerankClient = new RerankClient();
+const pageExtractor = new PageExtractor();
 
 // Document storage directory
 const DOCUMENTS_DIR = '/opt/rag-api/uploads';
@@ -445,6 +447,8 @@ app.post('/api/query', async (req, res) => {
           vector_score: result.score,
           document: result.payload.filename || chunk?.filename || 'Unknown',
           chunk_index: result.payload.chunk_index || chunk?.chunk_index || index,
+          page_number: chunk?.page_number || null,
+          section: chunk?.section || null,
           vector_id: result.id
         }
       };
@@ -469,7 +473,9 @@ app.post('/api/query', async (req, res) => {
       vector_score: chunk.metadata.vector_score,
       document: chunk.metadata.document,
       chunk_index: chunk.metadata.chunk_index,
-      relevance: (chunk.rerank_score * 100).toFixed(1) + '%'
+      page_number: chunk.metadata.page_number,
+      section: chunk.metadata.section,
+      relevance: chunk.rerank_score.toFixed(2)
     }));
 
     console.log('=== ENHANCED CONTEXT DEBUG ===');
@@ -529,7 +535,10 @@ app.post('/api/query', async (req, res) => {
       }
     }
 
-    // Step 9: Format enhanced response with improved attribution
+    // Step 9: Format enhanced response with smart attribution
+    const shouldShowSources = !generatedAnswer.includes('not available') && 
+                             context.some(c => c.rerank_score > 0);
+    
     const response = {
       success: true,
       query: query,
@@ -537,13 +546,16 @@ app.post('/api/query', async (req, res) => {
       answer: generatedAnswer,
       chunks_analyzed: searchResults.length,
       chunks_used: selectedChunks.length,
-      sources: context.map(c => ({
-        document: c.document,
-        section: c.chunk_index,
-        rerank_relevance: c.relevance,
-        vector_score: (c.vector_score * 100).toFixed(1) + '%',
-        excerpt: c.text.substring(0, 200) + (c.text.length > 200 ? '...' : '')
-      })),
+      sources: shouldShowSources ? context
+        .filter(c => c.rerank_score > 0)
+        .map(c => ({
+          document: c.document,
+          page: c.page_number,
+          section: c.section || `Chunk ${c.chunk_index}`,
+          rerank_relevance: c.relevance + '%',
+          vector_score: (c.vector_score * 100).toFixed(1) + '%',
+          excerpt: c.text.substring(0, 200) + (c.text.length > 200 ? '...' : '')
+        })) : [],
       enhancement_info: {
         reranker_used: true,
         dynamic_selection: true,
@@ -629,32 +641,28 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     console.log('Document created with ID:', documentId);
     await DocumentDatabase.logProcessingStep(documentId, 'upload', 'completed', 'File uploaded and saved successfully');
 
-    // Step 5: Extract text with Tika
-    console.log(`Processing document ${documentId}: Extracting text...`);
+    // Step 5: Extract text with page information
+    console.log(`Processing document ${documentId}: Extracting text with page info...`);
     await DocumentDatabase.logProcessingStep(documentId, 'extraction', 'started');
     
-    const formData = new FormData();
-    formData.append('file', req.file.buffer, req.file.originalname);
+    // Use PageExtractor for enhanced extraction
+    const extractionResult = await pageExtractor.extractWithPages(req.file.buffer, req.file.originalname);
+    const extractedText = extractionResult.text;
+    const pages = extractionResult.pages;
+    const sections = pageExtractor.extractSections(extractedText);
     
-    const tikaResponse = await axios.post('http://35.209.113.236:9998/tika/form', formData, {
-      headers: {
-        ...formData.getHeaders(),
-        'Accept': 'text/plain'
-      },
-      timeout: 60000
-    });
-    
-    const extractedText = tikaResponse.data;
-    console.log('=== TIKA EXTRACTION DEBUG ===');
+    console.log('=== ENHANCED EXTRACTION DEBUG ===');
     console.log('Extracted text length:', extractedText.length);
+    console.log('Pages found:', pages.length);
+    console.log('Sections found:', sections.length);
     console.log('First 100 chars:', extractedText.substring(0, 100));
-    console.log('============================');
+    console.log('================================');
     
     await DocumentDatabase.logProcessingStep(documentId, 'extraction', 'completed', 
-      `Extracted ${extractedText.length} characters`);
+      `Extracted ${extractedText.length} characters, ${pages.length} pages, ${sections.length} sections`);
 
-    // Step 6: Enhanced chunking with LangChain
-    console.log(`Processing document ${documentId}: Enhanced chunking with LangChain...`);
+    // Step 6: Enhanced chunking with LangChain and page tracking
+    console.log(`Processing document ${documentId}: Enhanced chunking with page tracking...`);
     await DocumentDatabase.logProcessingStep(documentId, 'chunking', 'started');
     
     const chunks = await enhancedChunker.chunkDocument(extractedText, req.file.originalname);
@@ -665,22 +673,35 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     console.log('First chunk metadata:', chunks[0]?.metadata);
     console.log('================================');
 
-    const enrichedChunks = chunks.map((chunk, index) => ({
-      doc_id: docId,
-      chunk_id: `${docId}_chunk_${index}`,
-      text: chunk.text,
-      chunk_index: index,
-      start_offset: 0, // LangChain doesn't provide this, set to 0
-      end_offset: chunk.text.length,
-      chunk_length: chunk.text.length,
-      total_chunks: chunks.length,
-      filename: req.file.originalname,
-      processed_date: new Date().toISOString(),
-      // Add enhanced metadata
-      section: chunk.metadata.section,
-      doc_type: chunk.metadata.doc_type,
-      has_requirements: chunk.metadata.has_requirements
-    }));
+    // Calculate character position for each chunk to determine page number
+    let currentPos = 0;
+    const enrichedChunks = chunks.map((chunk, index) => {
+      // Find which page this chunk belongs to
+      const chunkPage = pageExtractor.findPageForChunk(currentPos, pages);
+      // Find which section this chunk belongs to
+      const chunkSection = pageExtractor.findSectionForPosition(currentPos, sections) || chunk.metadata.section;
+      
+      const enrichedChunk = {
+        doc_id: docId,
+        chunk_id: `${docId}_chunk_${index}`,
+        text: chunk.text,
+        chunk_index: index,
+        start_offset: currentPos,
+        end_offset: currentPos + chunk.text.length,
+        chunk_length: chunk.text.length,
+        total_chunks: chunks.length,
+        filename: req.file.originalname,
+        processed_date: new Date().toISOString(),
+        // Enhanced metadata with page and section info
+        page_number: chunkPage,
+        section: chunkSection,
+        doc_type: chunk.metadata.doc_type,
+        has_requirements: chunk.metadata.has_requirements
+      };
+      
+      currentPos += chunk.text.length + 2; // Account for chunk separation
+      return enrichedChunk;
+    });
 
     console.log('=== ENRICHED CHUNKS DEBUG ===');
     console.log('Enriched chunks count:', enrichedChunks.length);
@@ -829,7 +850,9 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
         text: chunk.text,
         chunk_length: chunk.chunk_length,
         start_offset: chunk.start_offset,
-        end_offset: chunk.end_offset
+        end_offset: chunk.end_offset,
+        page_number: chunk.page_number,
+        section: chunk.section
       };
     });
 

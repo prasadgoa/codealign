@@ -3,7 +3,7 @@ import { Header } from '@/components/header';
 import { ComplianceChecker } from '@/components/compliance-checker';
 import { DocumentManager } from '@/components/document-manager';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { FileCheck, FolderOpen } from 'lucide-react';
+import { MessageCircle, FolderOpen } from 'lucide-react';
 
 const Index = () => {
   const [activeTab, setActiveTab] = useState('checker');
@@ -15,10 +15,10 @@ const Index = () => {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
           <h2 className="text-3xl font-bold text-foreground mb-2">
-            Building Code Compliance Platform
+            Public Safety Compliance Assistant
           </h2>
           <p className="text-lg text-muted-foreground">
-            Analyze property descriptions against building codes and manage your compliance documents.
+            Chat with our AI assistant about fire safety, building codes, and compliance requirements. Upload your documents and get instant expert guidance.
           </p>
         </div>
 
@@ -28,15 +28,15 @@ const Index = () => {
               value="checker" 
               className="flex items-center space-x-2 data-[state=active]:bg-gradient-primary data-[state=active]:text-primary-foreground"
             >
-              <FileCheck className="h-4 w-4" />
-              <span>Compliance Checker</span>
+              <MessageCircle className="h-4 w-4" />
+              <span>AI Assistant</span>
             </TabsTrigger>
             <TabsTrigger 
               value="documents"
               className="flex items-center space-x-2 data-[state=active]:bg-gradient-primary data-[state=active]:text-primary-foreground"
             >
               <FolderOpen className="h-4 w-4" />
-              <span>Document Manager</span>
+              <span>Document Library</span>
             </TabsTrigger>
           </TabsList>
 
