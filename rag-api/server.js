@@ -404,13 +404,26 @@ app.post('/api/query', async (req, res) => {
     const queryEmbedding = embeddingResponse.data[0];
     console.log('Query embedding generated, dimension:', queryEmbedding.length);
 
-    // Step 2: Search Qdrant for similar vectors (get more for reranking)
-    console.log('Searching Qdrant for similar chunks...');
+    // Step 2: Determine retrieval limit based on query type
+    const queryType = queryClassifier.classifyQuery(query);
+    const retrievalLimits = {
+      'definition': 25,
+      'specific_section': 30, 
+      'yes_no': 30,
+      'list': 50,
+      'procedure': 40,
+      'analysis': 60,
+      'general': 40
+    };
+    const retrievalLimit = retrievalLimits[queryType] || retrievalLimits.general;
+    
+    // Step 3: Search Qdrant for similar vectors (adaptive limit for reranking)
+    console.log(`Searching Qdrant for similar chunks (${queryType} query, limit: ${retrievalLimit})...`);
     const qdrantSearchResponse = await axios.post(
       'http://172.17.0.1:6333/collections/compliance_docs/points/search',
       {
         vector: queryEmbedding,
-        limit: 20,  // Get top 20 for reranking
+        limit: retrievalLimit,
         with_payload: true,
         with_vector: false
       },
@@ -434,11 +447,11 @@ app.post('/api/query', async (req, res) => {
       });
     }
 
-    // Step 3: Get chunk details from database
+    // Step 4: Get chunk details from database
     const chunkIds = searchResults.map(result => result.id);
     const chunkDetails = await DocumentDatabase.getChunksByVectorIds(chunkIds);
     
-    // Step 4: Prepare documents for reranking
+    // Step 5: Prepare documents for reranking
     const documentsForReranking = searchResults.map((result, index) => {
       const chunk = chunkDetails.find(c => c.vector_id === result.id);
       return {
@@ -454,19 +467,18 @@ app.post('/api/query', async (req, res) => {
       };
     });
     
-    // Step 5: Rerank results using cross-encoder
+    // Step 6: Rerank results using cross-encoder
     console.log('Reranking results with cross-encoder...');
     const rerankedResults = await rerankClient.rerank(query, documentsForReranking);
     console.log(`Reranking complete. Top score: ${rerankedResults[0]?.rerank_score?.toFixed(3)}`);
     
-    // Step 6: Apply dynamic chunk selection
-    const queryType = queryClassifier.classifyQuery(query);
+    // Step 7: Apply token-based adaptive chunk selection
     const optimalChunkCount = queryClassifier.selectOptimalChunkCount(query, rerankedResults);
     const selectedChunks = rerankedResults.slice(0, optimalChunkCount);
     
     console.log(`Query type: ${queryType}, Selected ${selectedChunks.length} chunks`);
     
-    // Step 7: Prepare context for LLM
+    // Step 8: Prepare context for LLM
     const context = selectedChunks.map((chunk, index) => ({
       text: chunk.text,
       rerank_score: chunk.rerank_score,
@@ -484,7 +496,7 @@ app.post('/api/query', async (req, res) => {
     console.log('Top rerank score:', context[0]?.rerank_score?.toFixed(3));
     console.log('===============================');
 
-    // Step 8: Generate enhanced prompt
+    // Step 9: Generate enhanced prompt
     console.log('Generating enhanced prompt...');
     const llmPrompt = promptEnhancer.buildEnhancedPrompt(query, selectedChunks, queryType);
 
@@ -535,7 +547,7 @@ app.post('/api/query', async (req, res) => {
       }
     }
 
-    // Step 9: Format enhanced response with smart attribution
+    // Step 10: Format enhanced response with smart attribution
     const shouldShowSources = !generatedAnswer.includes('not available') && 
                              context.some(c => c.rerank_score > 0);
     
@@ -844,6 +856,9 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     const chunkData = enrichedChunks.map((chunk, index) => {
       // Find the corresponding vector point by matching the index
       const vectorPoint = vectorPoints.find(vp => vp.payload.vector_index === index);
+      // Calculate token count using our standard estimation
+      const tokenCount = Math.ceil(chunk.text.length * 0.25);
+      
       return {
         chunk_index: chunk.chunk_index,  
         vector_id: vectorPoint ? vectorPoint.id : uuidv4(),  // Use the UUID from vectorPoints
@@ -852,7 +867,8 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
         start_offset: chunk.start_offset,
         end_offset: chunk.end_offset,
         page_number: chunk.page_number,
-        section: chunk.section
+        section: chunk.section,
+        token_count: tokenCount
       };
     });
 

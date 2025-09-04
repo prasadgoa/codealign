@@ -69,6 +69,11 @@ class EnhancedChunker {
 }
 
 class QueryClassifier {
+    constructor() {
+        // Enable detailed chunk selection profiling (set to false for production)
+        this.ENABLE_SELECTION_PROFILING = true; // Temporarily always enabled for testing
+    }
+
     classifyQuery(query) {
         const lower = query.toLowerCase();
         
@@ -102,34 +107,152 @@ class QueryClassifier {
 
     selectOptimalChunkCount(query, rerankedChunks) {
         const queryType = this.classifyQuery(query);
-        const scores = rerankedChunks.map(c => c.rerank_score);
-        const topScore = scores[0] || 0;
-        const dropoff = scores.length > 4 ? scores[0] - scores[4] : 0;
+        
+        // Use new token-based adaptive selection
+        const result = this.selectChunksWithTokenBudget(query, rerankedChunks, queryType);
+        
+        // Log basic metrics for performance tuning
+        console.log('QUERY_METRICS:', JSON.stringify({
+            query_type: queryType,
+            token_budget: result.tokenBudget,
+            tokens_used: result.tokensUsed,
+            token_utilization: (result.tokensUsed / result.tokenBudget).toFixed(2),
+            chunks_selected: result.selectedCount,
+            avg_rerank_score: result.avgRerankScore?.toFixed(2),
+            stop_reason: result.stopReason,
+            chunks_considered: result.chunksConsidered,
+            chunks_skipped: result.chunksSkipped,
+            requery_performed: false
+        }));
 
-        // Default count
-        let numChunks = 3;
+        // Log detailed chunk selection profiling if enabled
+        if (this.ENABLE_SELECTION_PROFILING && result.selectionProfile) {
+            console.log('CHUNK_SELECTION_PROFILE:', JSON.stringify({
+                query_type: queryType,
+                stop_reason: result.stopReason,
+                chunks_considered: result.chunksConsidered,
+                chunks_selected: result.selectedCount,
+                chunks_skipped: result.chunksSkipped,
+                selection_profile: result.selectionProfile
+            }));
+        }
+        
+        return result.selectedCount;
+    }
 
-        // High confidence single answer
-        if (queryType === 'definition' && topScore > -1.0) {
-            numChunks = 1;
-        }
-        // Specific section reference
-        else if (queryType === 'specific_section' && topScore > -1.5) {
-            numChunks = 2;
-        }
-        // Comprehensive queries need more context
-        else if (queryType === 'list' || queryType === 'procedure') {
-            numChunks = 5;
-        }
-        // Score distribution analysis
-        else if (dropoff > 3.0) {
-            numChunks = 2; // Sharp dropoff = only top chunks relevant
-        }
-        else if (dropoff < 1.0) {
-            numChunks = 4; // Flat distribution = need more context
+    selectChunksWithTokenBudget(query, rerankedChunks, queryType) {
+        // Token budgets and thresholds by query type
+        const typeConfig = {
+            'definition': { maxTokens: 500, minTokens: 150, retrieveLimit: 25 },
+            'specific_section': { maxTokens: 800, minTokens: 200, retrieveLimit: 30 },
+            'yes_no': { maxTokens: 700, minTokens: 200, retrieveLimit: 30 },
+            'list': { maxTokens: 2000, minTokens: 500, retrieveLimit: 50 },
+            'procedure': { maxTokens: 1500, minTokens: 400, retrieveLimit: 40 },
+            'analysis': { maxTokens: 3000, minTokens: 600, retrieveLimit: 60 },
+            'general': { maxTokens: 1200, minTokens: 300, retrieveLimit: 40 }
+        };
+
+        const config = typeConfig[queryType] || typeConfig.general;
+        
+        // Quality thresholds
+        const RERANK_THRESHOLD = -2.0;
+        const VECTOR_THRESHOLD = 0.5;
+        
+        let selectedChunks = [];
+        let tokensUsed = 0;
+        let rerankScoreSum = 0;
+        let stopReason = 'completed_all_chunks';
+        let selectionProfile = [];
+        let chunksConsidered = 0;
+        let chunksSkipped = 0;
+
+        // Process chunks in rerank score order (highest relevance first)
+        for (let i = 0; i < rerankedChunks.length; i++) {
+            const chunk = rerankedChunks[i];
+            chunksConsidered++;
+            const chunkTokens = this.estimateTokenCount(chunk.text);
+            
+            let chunkProfile = {
+                index: i,
+                rerank_score: parseFloat(chunk.rerank_score.toFixed(2)),
+                vector_score: parseFloat((chunk.metadata?.vector_score || 0).toFixed(2)),
+                chunk_tokens: chunkTokens,
+                selected: false,
+                reason: null
+            };
+            
+            // Apply quality gates
+            if (chunk.rerank_score < RERANK_THRESHOLD) {
+                chunkProfile.reason = `rerank_below_${RERANK_THRESHOLD}`;
+                stopReason = `rerank_threshold_${chunk.rerank_score.toFixed(2)}`;
+                if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
+                break;
+            }
+            
+            if ((chunk.metadata?.vector_score || 0) < VECTOR_THRESHOLD) {
+                chunkProfile.reason = `vector_below_${VECTOR_THRESHOLD}`;
+                chunksSkipped++;
+                if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
+                continue;
+            }
+            
+            // Check if adding this chunk would exceed budget
+            if (tokensUsed + chunkTokens > config.maxTokens) {
+                // Only stop if we've met minimum token requirements
+                if (tokensUsed >= config.minTokens) {
+                    chunkProfile.reason = 'token_budget_exceeded';
+                    chunkProfile.would_total = tokensUsed + chunkTokens;
+                    stopReason = `token_budget_${tokensUsed + chunkTokens}_exceeds_${config.maxTokens}`;
+                    if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
+                    break;
+                }
+                
+                // If we haven't met minimum, skip this chunk and continue
+                chunkProfile.reason = 'token_budget_skip_under_minimum';
+                chunksSkipped++;
+                if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
+                continue;
+            }
+            
+            // Chunk passed all gates - select it
+            selectedChunks.push(chunk);
+            tokensUsed += chunkTokens;
+            rerankScoreSum += chunk.rerank_score;
+            
+            chunkProfile.selected = true;
+            chunkProfile.cumulative_tokens = tokensUsed;
+            if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
         }
 
-        return Math.min(numChunks, rerankedChunks.length);
+        // Ensure we have at least one chunk if available
+        if (selectedChunks.length === 0 && rerankedChunks.length > 0) {
+            const bestChunk = rerankedChunks[0];
+            selectedChunks.push(bestChunk);
+            tokensUsed = this.estimateTokenCount(bestChunk.text);
+            rerankScoreSum = bestChunk.rerank_score;
+        }
+
+        const result = {
+            selectedCount: selectedChunks.length,
+            tokenBudget: config.maxTokens,
+            tokensUsed,
+            avgRerankScore: selectedChunks.length > 0 ? rerankScoreSum / selectedChunks.length : 0,
+            meetsMinimum: tokensUsed >= config.minTokens,
+            stopReason,
+            chunksConsidered,
+            chunksSkipped
+        };
+
+        // Add detailed profiling data if enabled
+        if (this.ENABLE_SELECTION_PROFILING && selectionProfile.length > 0) {
+            result.selectionProfile = selectionProfile;
+        }
+
+        return result;
+    }
+
+    estimateTokenCount(text) {
+        return Math.ceil(text.length * 0.25); // 1 token ≈ 4 chars
     }
 }
 

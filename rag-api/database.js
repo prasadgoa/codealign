@@ -76,8 +76,8 @@ class DocumentDatabase {
       const insertQuery = `
         INSERT INTO document_chunks (
           document_id, chunk_index, vector_id, chunk_text, chunk_length,
-          page_number, start_offset, end_offset, section
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          page_number, start_offset, end_offset, section, token_count
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       `;
       
       for (const chunk of chunks) {
@@ -90,7 +90,8 @@ class DocumentDatabase {
           chunk.page_number || null,
           chunk.start_offset || null,
           chunk.end_offset || null,
-          chunk.section || null     // section name if available
+          chunk.section || null,    // section name if available
+          chunk.token_count || Math.ceil(chunk.text.length * 0.25)  // token count with fallback
         ]);
       }
       
