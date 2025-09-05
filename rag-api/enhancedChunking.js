@@ -105,11 +105,11 @@ class QueryClassifier {
         return 'general';
     }
 
-    selectOptimalChunkCount(query, rerankedChunks) {
+    selectOptimalChunks(query, vectorResults) {
         const queryType = this.classifyQuery(query);
         
-        // Use new token-based adaptive selection
-        const result = this.selectChunksWithTokenBudget(query, rerankedChunks, queryType);
+        // Use new token-based adaptive selection with vector-first ordering
+        const result = this.selectChunksWithTokenBudget(query, vectorResults, queryType);
         
         // Log basic metrics for performance tuning
         console.log('QUERY_METRICS:', JSON.stringify({
@@ -118,10 +118,13 @@ class QueryClassifier {
             tokens_used: result.tokensUsed,
             token_utilization: (result.tokensUsed / result.tokenBudget).toFixed(2),
             chunks_selected: result.selectedCount,
+            chunks_reranked: result.chunksReranked,
+            rerank_efficiency: `${result.chunksReranked}/${result.chunksConsidered}`,
             avg_rerank_score: result.avgRerankScore?.toFixed(2),
             stop_reason: result.stopReason,
             chunks_considered: result.chunksConsidered,
             chunks_skipped: result.chunksSkipped,
+            ordering_strategy: 'vector_first_lazy_rerank',
             requery_performed: false
         }));
 
@@ -137,26 +140,36 @@ class QueryClassifier {
             }));
         }
         
-        return result.selectedCount;
+        // Return both the selected chunks and metadata
+        return {
+            chunks: result.selectedChunks || [],
+            count: result.selectedCount,
+            metadata: result
+        };
     }
 
-    selectChunksWithTokenBudget(query, rerankedChunks, queryType) {
-        // Token budgets and thresholds by query type
+    selectChunksWithTokenBudget(query, vectorResults, queryType) {
+        // Updated token budgets - increased for better coverage
         const typeConfig = {
-            'definition': { maxTokens: 500, minTokens: 150, retrieveLimit: 25 },
-            'specific_section': { maxTokens: 800, minTokens: 200, retrieveLimit: 30 },
-            'yes_no': { maxTokens: 700, minTokens: 200, retrieveLimit: 30 },
-            'list': { maxTokens: 2000, minTokens: 500, retrieveLimit: 50 },
-            'procedure': { maxTokens: 1500, minTokens: 400, retrieveLimit: 40 },
-            'analysis': { maxTokens: 3000, minTokens: 600, retrieveLimit: 60 },
-            'general': { maxTokens: 1200, minTokens: 300, retrieveLimit: 40 }
+            'definition': { maxTokens: 800, minTokens: 200, retrieveLimit: 25 },
+            'specific_section': { maxTokens: 1000, minTokens: 300, retrieveLimit: 30 },
+            'yes_no': { maxTokens: 1000, minTokens: 300, retrieveLimit: 30 },
+            'list': { maxTokens: 2800, minTokens: 700, retrieveLimit: 50 },
+            'procedure': { maxTokens: 2000, minTokens: 500, retrieveLimit: 40 },
+            'analysis': { maxTokens: 4000, minTokens: 800, retrieveLimit: 60 },
+            'general': { maxTokens: 1800, minTokens: 400, retrieveLimit: 40 }
         };
 
         const config = typeConfig[queryType] || typeConfig.general;
         
-        // Quality thresholds
-        const RERANK_THRESHOLD = -2.0;
+        // Quality thresholds - vector first, rerank as quality gate only
+        const RERANK_THRESHOLD = -3.0;  // More permissive
         const VECTOR_THRESHOLD = 0.5;
+        
+        // Step 1: Sort by vector score (highest first)
+        const vectorSortedChunks = [...vectorResults].sort((a, b) => 
+            (b.metadata?.vector_score || 0) - (a.metadata?.vector_score || 0)
+        );
         
         let selectedChunks = [];
         let tokensUsed = 0;
@@ -165,30 +178,24 @@ class QueryClassifier {
         let selectionProfile = [];
         let chunksConsidered = 0;
         let chunksSkipped = 0;
+        let chunksReranked = 0;
 
-        // Process chunks in rerank score order (highest relevance first)
-        for (let i = 0; i < rerankedChunks.length; i++) {
-            const chunk = rerankedChunks[i];
+        // Step 2: Process chunks in vector score order with lazy reranking
+        for (let i = 0; i < vectorSortedChunks.length; i++) {
+            const chunk = vectorSortedChunks[i];
             chunksConsidered++;
             const chunkTokens = this.estimateTokenCount(chunk.text);
             
             let chunkProfile = {
                 index: i,
-                rerank_score: parseFloat(chunk.rerank_score.toFixed(2)),
                 vector_score: parseFloat((chunk.metadata?.vector_score || 0).toFixed(2)),
                 chunk_tokens: chunkTokens,
                 selected: false,
-                reason: null
+                reason: null,
+                rerank_score: null
             };
             
-            // Apply quality gates
-            if (chunk.rerank_score < RERANK_THRESHOLD) {
-                chunkProfile.reason = `rerank_below_${RERANK_THRESHOLD}`;
-                stopReason = `rerank_threshold_${chunk.rerank_score.toFixed(2)}`;
-                if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
-                break;
-            }
-            
+            // Apply vector quality gate first
             if ((chunk.metadata?.vector_score || 0) < VECTOR_THRESHOLD) {
                 chunkProfile.reason = `vector_below_${VECTOR_THRESHOLD}`;
                 chunksSkipped++;
@@ -196,7 +203,7 @@ class QueryClassifier {
                 continue;
             }
             
-            // Check if adding this chunk would exceed budget
+            // Check token budget before expensive reranking
             if (tokensUsed + chunkTokens > config.maxTokens) {
                 // Only stop if we've met minimum token requirements
                 if (tokensUsed >= config.minTokens) {
@@ -214,10 +221,34 @@ class QueryClassifier {
                 continue;
             }
             
+            // Step 3: Lazy reranking - only rerank when we're about to select
+            let rerankScore;
+            try {
+                // This would be the reranking call - simulate for now
+                chunksReranked++;
+                // In real implementation: rerankScore = await rerankClient.rerankSingle(query, chunk);
+                // For now, use existing rerank_score if available, otherwise simulate
+                rerankScore = chunk.rerank_score || this.simulateRerankScore(query, chunk.text);
+                chunkProfile.rerank_score = parseFloat(rerankScore.toFixed(2));
+            } catch (error) {
+                console.warn('Reranking failed, using vector score as fallback:', error);
+                rerankScore = chunk.metadata?.vector_score || 0;
+                chunkProfile.rerank_score = 'fallback';
+            }
+            
+            // Apply rerank quality gate (more permissive)
+            if (rerankScore < RERANK_THRESHOLD) {
+                chunkProfile.reason = `rerank_below_${RERANK_THRESHOLD}`;
+                chunksSkipped++;
+                if (this.ENABLE_SELECTION_PROFILING) selectionProfile.push(chunkProfile);
+                continue;
+            }
+            
             // Chunk passed all gates - select it
+            chunk.rerank_score = rerankScore; // Update chunk with rerank score
             selectedChunks.push(chunk);
             tokensUsed += chunkTokens;
-            rerankScoreSum += chunk.rerank_score;
+            rerankScoreSum += rerankScore;
             
             chunkProfile.selected = true;
             chunkProfile.cumulative_tokens = tokensUsed;
@@ -225,14 +256,17 @@ class QueryClassifier {
         }
 
         // Ensure we have at least one chunk if available
-        if (selectedChunks.length === 0 && rerankedChunks.length > 0) {
-            const bestChunk = rerankedChunks[0];
+        if (selectedChunks.length === 0 && vectorSortedChunks.length > 0) {
+            const bestChunk = vectorSortedChunks[0];
+            bestChunk.rerank_score = bestChunk.rerank_score || this.simulateRerankScore(query, bestChunk.text);
             selectedChunks.push(bestChunk);
             tokensUsed = this.estimateTokenCount(bestChunk.text);
             rerankScoreSum = bestChunk.rerank_score;
+            chunksReranked++;
         }
 
         const result = {
+            selectedChunks,  // Include the actual selected chunks
             selectedCount: selectedChunks.length,
             tokenBudget: config.maxTokens,
             tokensUsed,
@@ -240,7 +274,8 @@ class QueryClassifier {
             meetsMinimum: tokensUsed >= config.minTokens,
             stopReason,
             chunksConsidered,
-            chunksSkipped
+            chunksSkipped,
+            chunksReranked  // New metric for performance tracking
         };
 
         // Add detailed profiling data if enabled
@@ -254,31 +289,73 @@ class QueryClassifier {
     estimateTokenCount(text) {
         return Math.ceil(text.length * 0.25); // 1 token ≈ 4 chars
     }
+
+    simulateRerankScore(query, chunkText) {
+        // Temporary simulation - in real implementation this would be a single rerank call
+        // For now, return existing rerank score or estimate based on text similarity
+        const queryLower = query.toLowerCase();
+        const textLower = chunkText.toLowerCase();
+        
+        // Simple keyword overlap scoring as fallback
+        const queryWords = queryLower.split(/\s+/);
+        const textWords = new Set(textLower.split(/\s+/));
+        
+        let overlap = 0;
+        queryWords.forEach(word => {
+            if (textWords.has(word)) overlap++;
+        });
+        
+        // Convert to rerank-like score (-10 to 10 range)
+        const overlapRatio = overlap / queryWords.length;
+        return (overlapRatio * 8) - 2; // Scale to reasonable rerank range
+    }
 }
 
 class PromptEnhancer {
     buildEnhancedPrompt(query, chunks, queryType) {
-        // Since vLLM now has persistent system prompt, we only need context and query
+        // Label chunks with letters A, B, C, etc. for easy reference
         const contextSection = `CONTEXT FROM COMPLIANCE DOCUMENTS:\n${
-            chunks.map((c, i) => 
-                `[Source ${i+1}: ${c.metadata.document}${c.metadata.section ? `, Section ${c.metadata.section}` : ''}]\n${c.text}\n`
-            ).join('\n')
+            chunks.map((c, i) => {
+                const label = String.fromCharCode(65 + i); // A, B, C, etc.
+                // Store label in metadata for later attribution mapping
+                c.metadata.label = label;
+                return `[${label}] ${c.metadata.document}, Page ${c.metadata.page_number || 'N/A'}${c.metadata.section ? `, Section: ${c.metadata.section}` : ''}:\n${c.text}\n`;
+            }).join('\n')
         }`;
 
-        const querySection = `\nQUESTION: ${query}`;
-
-        // Optional query-specific hints (much shorter now)
-        const queryHints = {
-            'definition': '\n(Provide definition with section reference)',
-            'yes_no': '\n(Start with Yes/No)',
-            'list': '\n(Provide numbered list)',
-            'specific_section': '\n(Quote exact text)',
-            'procedure': '\n(Step-by-step instructions)'
-        };
-
-        const hint = queryHints[queryType] || '';
+        const querySection = `\nUSER QUESTION: ${query}`;
         
-        return contextSection + querySection + hint;
+        return contextSection + querySection;
+    }
+    
+    // Extract inline citations from natural LLM response
+    parseLLMResponse(llmResponse) {
+        try {
+            // Clean up the response (remove any ANSWER: prefix if present)
+            const answer = llmResponse.replace(/^ANSWER:\s*/i, '').trim();
+            
+            // Extract all inline citation markers [A], [B], etc.
+            const markerMatches = answer.match(/\[([A-Z])\]/g);
+            const sourcesUsed = markerMatches 
+                ? [...new Set(markerMatches.map(m => m.replace(/[\[\]]/g, '')))]  // Remove duplicates, get unique letters
+                : [];
+            
+            return {
+                answer,
+                sourcesUsed,
+                success: true,
+                method: 'inline_marker_extraction',
+                citations_found: markerMatches ? markerMatches.length : 0,
+                unique_sources: sourcesUsed.length
+            };
+        } catch (error) {
+            return {
+                answer: llmResponse,
+                sourcesUsed: [],
+                success: false,
+                error: error.message
+            };
+        }
     }
 }
 

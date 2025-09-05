@@ -8,6 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import ReactMarkdown from 'react-markdown';
 
 interface ComplianceSource {
+  reference?: string;
   document: string;
   page?: number;
   section?: string;
@@ -189,6 +190,11 @@ export function ComplianceChecker() {
                     <div key={index} className="p-3 rounded-lg bg-muted/50 border border-border/50">
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex items-center gap-2 flex-wrap">
+                          {source.reference && (
+                            <Badge variant="default" className="text-xs font-semibold">
+                              {source.reference}
+                            </Badge>
+                          )}
                           <Badge variant="secondary" className="text-xs flex items-center gap-1">
                             <FileText className="h-3 w-3" />
                             {source.document}

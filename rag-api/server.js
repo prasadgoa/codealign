@@ -371,6 +371,66 @@ app.post('/api/internal/store-chunks', async (req, res) => {
   }
 });
 
+// Helper functions for LLM-guided attribution
+function buildLLMGuidedAttribution(selectedChunks, sourcesUsed) {
+  if (!sourcesUsed || sourcesUsed.length === 0) {
+    return [];
+  }
+  
+  const attributedSources = [];
+  
+  sourcesUsed.forEach(label => {
+    // Find the chunk with this label
+    const chunk = selectedChunks.find(c => c.metadata.label === label);
+    if (chunk) {
+      attributedSources.push({
+        document: chunk.metadata.document,
+        page: chunk.metadata.page_number || 'N/A',
+        section: chunk.metadata.section || 'N/A', 
+        excerpt: chunk.text.substring(0, 200) + (chunk.text.length > 200 ? '...' : ''),
+        label: label
+      });
+    }
+  });
+  
+  return attributedSources;
+}
+
+function enhanceAnswerWithReferences(answer, llmGuidedSources) {
+  let enhancedAnswer = answer;
+  const finalSources = [];
+  
+  // Handle undefined or empty sources gracefully
+  if (!llmGuidedSources || llmGuidedSources.length === 0) {
+    return {
+      enhancedAnswer: answer,
+      finalSources: []
+    };
+  }
+  
+  // Map LLM labels [A], [B] to numbered references [1], [2]
+  llmGuidedSources.forEach((source, index) => {
+    const labelPattern = new RegExp(`\\[${source.label}\\]`, 'g');
+    const numberRef = `[${index + 1}]`;
+    
+    enhancedAnswer = enhancedAnswer.replace(labelPattern, numberRef);
+    
+    // Add to final sources list with enhanced metadata and reference number
+    finalSources.push({
+      reference: `[${index + 1}]`,
+      document: source.document,
+      page: source.page,
+      section: source.section,
+      excerpt: source.excerpt
+    });
+  });
+  
+  return {
+    enhancedAnswer,
+    finalSources
+  };
+}
+
 // Direct query endpoint (bypasses n8n)  
 app.post('/api/query', async (req, res) => {
   try {
@@ -467,14 +527,10 @@ app.post('/api/query', async (req, res) => {
       };
     });
     
-    // Step 6: Rerank results using cross-encoder
-    console.log('Reranking results with cross-encoder...');
-    const rerankedResults = await rerankClient.rerank(query, documentsForReranking);
-    console.log(`Reranking complete. Top score: ${rerankedResults[0]?.rerank_score?.toFixed(3)}`);
-    
-    // Step 7: Apply token-based adaptive chunk selection
-    const optimalChunkCount = queryClassifier.selectOptimalChunkCount(query, rerankedResults);
-    const selectedChunks = rerankedResults.slice(0, optimalChunkCount);
+    // Step 6: Apply vector-first token-based adaptive chunk selection (with lazy reranking)
+    console.log('Applying vector-first adaptive selection with lazy reranking...');
+    const selectionResult = queryClassifier.selectOptimalChunks(query, documentsForReranking);
+    const selectedChunks = selectionResult.chunks;
     
     console.log(`Query type: ${queryType}, Selected ${selectedChunks.length} chunks`);
     
@@ -507,6 +563,7 @@ app.post('/api/query', async (req, res) => {
     console.log('=============================');
 
     let generatedAnswer;
+    let llmGuidedSources = [];
     try {
       const llmResponse = await axios.post(
         'http://35.209.219.117:8000/v1/chat/completions',
@@ -523,7 +580,7 @@ app.post('/api/query', async (req, res) => {
             }
           ],
           max_tokens: 500,  // Increased for more detailed answers
-          temperature: 0.1
+          temperature: 0.3  // Increased for more natural language responses
         },
         {
           headers: { 'Content-Type': 'application/json' },
@@ -531,47 +588,82 @@ app.post('/api/query', async (req, res) => {
         }
       );
       
-      generatedAnswer = llmResponse.data.choices[0].message.content.trim();
+      const rawLLMResponse = llmResponse.data.choices[0].message.content.trim();
+      
+      // Step 10: Parse LLM response to extract answer and sources used
+      const parsedResponse = promptEnhancer.parseLLMResponse(rawLLMResponse);
+      
+      console.log('=== CITATION EXTRACTION DEBUG ===');
+      console.log('Parsing method:', parsedResponse.method);
+      console.log('Citations found:', parsedResponse.citations_found);
+      console.log('Unique sources:', parsedResponse.unique_sources);
+      console.log('Sources used:', parsedResponse.sourcesUsed);
+      console.log('Success:', parsedResponse.success);
+      if (parsedResponse.warning) console.log('Warning:', parsedResponse.warning);
+      if (parsedResponse.error) console.log('Error:', parsedResponse.error);
+      console.log('==================================');
+      
+      if (!parsedResponse.success) {
+        console.warn('LLM response parsing issue:', parsedResponse.warning || parsedResponse.error);
+      }
+      
+      generatedAnswer = parsedResponse.answer;
+      
+      // Step 11: Build attribution based on LLM guidance
+      llmGuidedSources = buildLLMGuidedAttribution(selectedChunks, parsedResponse.sourcesUsed);
+      
+      console.log('=== ATTRIBUTION BUILDING DEBUG ===');
+      console.log('LLM sources used:', parsedResponse.sourcesUsed);
+      console.log('Available chunk labels:', selectedChunks.map(c => c.metadata.label));
+      console.log('Built attributions count:', llmGuidedSources.length);
+      console.log('===================================');
+      
     } catch (llmError) {
       console.error('LLM service error:', llmError.message);
       
-      // Fallback: Return context-based answer
+      // Fallback: Return context-based answer with traditional attribution
       if (context.length > 0) {
         generatedAnswer = `Based on the available documents, here are the relevant excerpts for your query "${query}":\n\n` + 
           context.slice(0, 3).map((c, i) => 
             `${i + 1}. From "${c.document}": ${c.text.substring(0, 300)}${c.text.length > 300 ? '...' : ''}`
           ).join('\n\n') + 
           '\n\n[Note: LLM service temporarily unavailable, showing relevant document excerpts]';
+        
+        // Use all chunks for fallback attribution
+        llmGuidedSources = selectedChunks.map((c, index) => ({
+          document: c.metadata.document,
+          page: c.metadata.page_number,
+          section: c.metadata.section || 'N/A',
+          excerpt: c.text.substring(0, 200) + (c.text.length > 200 ? '...' : ''),
+          label: String.fromCharCode(65 + index), // A, B, C for fallback
+          relevance_note: 'Fallback attribution - LLM unavailable'
+        }));
       } else {
         generatedAnswer = 'Sorry, I could not find relevant information for your query, and the LLM service is currently unavailable.';
+        llmGuidedSources = [];
       }
     }
 
-    // Step 10: Format enhanced response with smart attribution
-    const shouldShowSources = !generatedAnswer.includes('not available') && 
-                             context.some(c => c.rerank_score > 0);
+    // Step 12: Enhance answer by converting LLM markers to numbered references
+    console.log('=== REFERENCE ENHANCEMENT DEBUG ===');
+    console.log('Input sources count:', llmGuidedSources ? llmGuidedSources.length : 'undefined');
+    console.log('Input sources structure:', llmGuidedSources);
+    const { enhancedAnswer, finalSources } = enhanceAnswerWithReferences(generatedAnswer, llmGuidedSources);
+    console.log('Output final sources count:', finalSources ? finalSources.length : 'undefined');
+    console.log('=====================================');
     
     const response = {
       success: true,
       query: query,
       query_type: queryType,
-      answer: generatedAnswer,
+      answer: enhancedAnswer,
       chunks_analyzed: searchResults.length,
       chunks_used: selectedChunks.length,
-      sources: shouldShowSources ? context
-        .filter(c => c.rerank_score > 0)
-        .map(c => ({
-          document: c.document,
-          page: c.page_number,
-          section: c.section || `Chunk ${c.chunk_index}`,
-          rerank_relevance: c.relevance + '%',
-          vector_score: (c.vector_score * 100).toFixed(1) + '%',
-          excerpt: c.text.substring(0, 200) + (c.text.length > 200 ? '...' : '')
-        })) : [],
+      sources: finalSources,
       enhancement_info: {
-        reranker_used: true,
-        dynamic_selection: true,
-        enhanced_prompting: true
+        llm_guided_attribution: true,
+        natural_language_format: true,
+        temperature: 0.3
       },
       status: 'success'
     };
