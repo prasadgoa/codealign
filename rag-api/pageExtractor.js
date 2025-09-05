@@ -53,7 +53,10 @@ class PageExtractor {
                     ...formData.getHeaders(),
                     'Accept': 'application/json'
                 },
-                timeout: 60000
+                timeout: 300000, // 5 minutes for complex PDFs
+                maxContentLength: 100 * 1024 * 1024, // 100MB
+                maxBodyLength: 100 * 1024 * 1024,
+                httpAgent: new (require('http').Agent)({ keepAlive: true })
             }
         );
         
@@ -81,7 +84,10 @@ class PageExtractor {
                     'X-Tika-PDFsortByPosition': 'true',
                     'X-Tika-PDFextractAnnotationText': 'true'
                 },
-                timeout: 120000
+                timeout: 300000, // 5 minutes for HTML extraction
+                maxContentLength: 100 * 1024 * 1024,
+                maxBodyLength: 100 * 1024 * 1024,
+                httpAgent: new (require('http').Agent)({ keepAlive: true })
             }
         );
         
@@ -444,7 +450,10 @@ class PageExtractor {
                     ...formData.getHeaders(),
                     'Accept': 'text/plain'
                 },
-                timeout: 60000
+                timeout: 300000, // 5 minutes for fallback extraction
+                maxContentLength: 100 * 1024 * 1024,
+                maxBodyLength: 100 * 1024 * 1024,
+                httpAgent: new (require('http').Agent)({ keepAlive: true })
             }
         );
         

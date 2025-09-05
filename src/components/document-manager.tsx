@@ -3,8 +3,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Upload, FileText, Trash2, Eye, Plus, RefreshCw } from 'lucide-react';
+import { Upload, FileText, Trash2, Eye, Plus, RefreshCw, Clock, CheckCircle, XCircle, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Progress } from '@/components/ui/progress';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface CodeDocument {
   id: number;
@@ -13,11 +15,14 @@ interface CodeDocument {
   file_size: number;
   mime_type: string;
   upload_date: string;
-  processing_status: 'processing' | 'completed' | 'failed';
+  processing_status: 'queued' | 'uploading' | 'processing' | 'completed' | 'failed';
   total_chunks: number;
   actual_chunks?: number;
   created_at: string;
   updated_at: string;
+  error_message?: string;  // For failed state tooltip
+  queue_position?: number;  // Position in upload queue
+  temp_id?: string;  // For tracking before real ID is assigned
 }
 
 interface ApiResponse<T> {
@@ -137,32 +142,75 @@ export function DocumentManager() {
     setTimeout(poll, 1500); // Increased from 500ms to 1500ms
   };
 
+  // Helper function to update document status
+  const updateDocumentStatus = (
+    tempId: string | number, 
+    status: CodeDocument['processing_status'], 
+    realId?: number, 
+    errorMessage?: string
+  ) => {
+    setDocuments(prev => prev.map(doc => {
+      // Match by temp_id or id
+      if (doc.temp_id === tempId || doc.id === tempId) {
+        return {
+          ...doc,
+          processing_status: status,
+          id: realId || doc.id,
+          error_message: errorMessage,
+          // Clear queue position when not queued
+          queue_position: status === 'queued' ? doc.queue_position : undefined
+        };
+      }
+      // Update queue positions for remaining queued documents
+      if (status === 'uploading' && doc.processing_status === 'queued' && doc.queue_position) {
+        return {
+          ...doc,
+          queue_position: doc.queue_position - 1
+        };
+      }
+      return doc;
+    }));
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) return;
 
     const fileArray = Array.from(files);
     
-    for (const file of fileArray) {
-      const tempId = Date.now().toString() + Math.random();
-      
-      // Immediately add document to UI with processing status
-      const tempDoc: CodeDocument = {
-        id: -tempId as any, // Temporary negative ID
+    // Step 1: Add ALL files to UI immediately with appropriate statuses
+    const queuedDocs = fileArray.map((file, index) => {
+      const tempId = `temp_${Date.now()}_${index}`;
+      return {
+        id: -(Date.now() + index) as any, // Temporary negative ID
+        temp_id: tempId,
         filename: file.name,
         original_filename: file.name,
         file_size: file.size,
         mime_type: file.type,
         upload_date: new Date().toISOString(),
-        processing_status: 'processing',
+        processing_status: (index === 0 ? 'uploading' : 'queued') as CodeDocument['processing_status'],
         total_chunks: 0,
         actual_chunks: 0,
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        queue_position: index
       };
+    });
+    
+    // Add all documents to the UI at once
+    setDocuments(prev => [...queuedDocs, ...prev]);
+    
+    // Step 2: Process each file sequentially
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      const tempId = queuedDocs[i].temp_id!;
       
-      // Add to documents list immediately
-      setDocuments(prev => [tempDoc, ...prev]);
+      // Update status to uploading (for files after the first)
+      if (i > 0) {
+        updateDocumentStatus(tempId, 'uploading');
+      }
+      
       setUploadingFiles(prev => new Set([...prev, tempId]));
 
       try {
@@ -177,42 +225,39 @@ export function DocumentManager() {
         const data = await response.json();
         
         if (data.success) {
-          // Update the temporary document with real ID and data
-          setDocuments(prev => prev.map(doc => 
-            doc.id === tempDoc.id ? {
-              ...doc,
-              id: data.document_id,
-              filename: data.filename,
-              original_filename: data.filename,
-              // Keep processing status - will be updated by polling
-            } : doc
-          ));
+          // Update to processing status with real ID
+          updateDocumentStatus(tempId, 'processing', data.document_id);
           
           // Start polling for status updates
           pollDocumentStatus(data.document_id, file.name, data.total_chunks, data.processing_time_ms);
           
         } else {
-          // Remove the temporary document on failure
-          setDocuments(prev => prev.filter(doc => doc.id !== tempDoc.id));
+          const errorMsg = response.status === 409 
+            ? 'Document already exists' 
+            : data.error || data.message || 'Upload failed';
+          
+          // Update to failed status with error message
+          updateDocumentStatus(tempId, 'failed', undefined, errorMsg);
           
           if (response.status === 409) {
             toast({
-              title: "Duplicate Document",
-              description: `${file.name} already exists in the system.`,
+              title: "Duplicate Document", 
+              description: `${truncateFilename(file.name)} already exists in the system.`,
               variant: "destructive",
             });
           } else {
-            throw new Error(data.error || data.message || 'Upload failed');
+            throw new Error(errorMsg);
           }
         }
       } catch (error) {
-        // Remove the temporary document on error
-        setDocuments(prev => prev.filter(doc => doc.id !== tempDoc.id));
+        // Update to failed status with error message
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        updateDocumentStatus(tempId, 'failed', undefined, errorMessage);
         
         console.error('Upload error:', error);
         toast({
           title: "Upload Failed",
-          description: `Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          description: `Failed to upload ${truncateFilename(file.name)}: ${error instanceof Error ? error.message : 'Unknown error'}`,
           variant: "destructive",
         });
       } finally {
@@ -241,7 +286,7 @@ export function DocumentManager() {
       if (data.success) {
         toast({
           title: "Document Deleted",
-          description: `${data.deletedDocument || filename} removed successfully. Cleaned up ${data.deletedChunks || 0} chunks and ${data.deletedVectors || 0} vectors.`,
+          description: `${truncateFilename(data.deletedDocument || filename)} removed successfully. Cleaned up ${data.deletedChunks || 0} chunks and ${data.deletedVectors || 0} vectors.`,
         });
         
         // Refresh document list
@@ -253,7 +298,7 @@ export function DocumentManager() {
       console.error('Delete error:', error);
       toast({
         title: "Delete Failed",
-        description: `Failed to delete ${filename}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        description: `Failed to delete ${truncateFilename(filename)}: ${error instanceof Error ? error.message : 'Unknown error'}`,
         variant: "destructive",
       });
     } finally {
@@ -304,18 +349,80 @@ export function DocumentManager() {
     
     toast({
       title: "Opening Document",
-      description: `Opening ${doc.original_filename} in new tab`,
+      description: `Opening ${truncateFilename(doc.original_filename)}`,
     });
   };
 
-  const getStatusBadge = (status: CodeDocument['processing_status']) => {
+  const downloadDocument = (doc: CodeDocument) => {
+    // Download document file
+    const downloadUrl = `http://35.209.113.236:3001/api/documents/${doc.id}/download`;
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = doc.original_filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    toast({
+      title: "Downloading Document",
+      description: `Downloading ${truncateFilename(doc.original_filename)}`,
+    });
+  };
+
+  const getStatusBadge = (doc: CodeDocument) => {
+    const status = doc.processing_status;
+    const errorMessage = doc.error_message;
+    
     switch (status) {
-      case 'completed':
-        return <Badge variant="default" className="bg-accent text-accent-foreground">Active</Badge>;
+      case 'queued':
+        return (
+          <Badge variant="secondary">
+            Queued
+            {doc.queue_position !== undefined && doc.queue_position > 0 && (
+              <span className="ml-1">#{doc.queue_position + 1}</span>
+            )}
+          </Badge>
+        );
+      case 'uploading':
+        return (
+          <Badge variant="outline" className="animate-pulse">
+            Uploading
+          </Badge>
+        );
       case 'processing':
-        return <Badge variant="outline" className="border-yellow-500 text-yellow-600">Processing</Badge>;
+        return (
+          <Badge variant="outline" className="animate-pulse">
+            Processing
+          </Badge>
+        );
+      case 'completed':
+        return (
+          <Badge variant="default" className="bg-accent text-accent-foreground">
+            Active
+          </Badge>
+        );
       case 'failed':
-        return <Badge variant="destructive">Error</Badge>;
+        if (errorMessage) {
+          return (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="destructive" className="cursor-help">
+                    Failed
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="max-w-xs">{errorMessage}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          );
+        }
+        return (
+          <Badge variant="destructive">
+            Failed
+          </Badge>
+        );
     }
   };
 
@@ -325,6 +432,25 @@ export function DocumentManager() {
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString();
+  };
+
+  const truncateFilename = (filename: string, maxLength: number = 30) => {
+    if (filename.length <= maxLength) return filename;
+    
+    // Try to preserve file extension
+    const lastDotIndex = filename.lastIndexOf('.');
+    const extension = lastDotIndex > 0 ? filename.substring(lastDotIndex) : '';
+    const nameWithoutExt = lastDotIndex > 0 ? filename.substring(0, lastDotIndex) : filename;
+    
+    // Calculate how much of the name we can show
+    const availableLength = maxLength - extension.length - 3; // 3 for "..."
+    
+    if (availableLength > 0) {
+      return nameWithoutExt.substring(0, availableLength) + '...' + extension;
+    }
+    
+    // If even with extension it's too long, just truncate simply
+    return filename.substring(0, maxLength - 3) + '...';
   };
 
   if (loading) {
@@ -432,6 +558,33 @@ export function DocumentManager() {
           <CardTitle>Document Library</CardTitle>
         </CardHeader>
         <CardContent>
+          {/* Upload Progress Indicator */}
+          {(() => {
+            const uploadingCount = documents.filter(d => ['queued', 'uploading', 'processing'].includes(d.processing_status)).length;
+            const completedCount = documents.filter(d => d.processing_status === 'completed' && d.temp_id).length;
+            const failedCount = documents.filter(d => d.processing_status === 'failed' && d.temp_id).length;
+            const totalInBatch = documents.filter(d => d.temp_id).length;
+            
+            if (uploadingCount > 0 || (totalInBatch > 0 && completedCount + failedCount < totalInBatch)) {
+              const progress = totalInBatch > 0 ? ((completedCount + failedCount) / totalInBatch) * 100 : 0;
+              
+              return (
+                <div className="mb-4 p-3 border rounded-lg bg-muted/30">
+                  <div className="flex justify-between text-sm mb-2">
+                    <span className="font-medium">
+                      Uploading {uploadingCount} {uploadingCount === 1 ? 'document' : 'documents'}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {completedCount} completed, {failedCount} failed
+                    </span>
+                  </div>
+                  <Progress value={progress} className="h-2" />
+                </div>
+              );
+            }
+            return null;
+          })()}
+          
           {documents.length === 0 ? (
             <div className="text-center py-12">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
@@ -468,7 +621,9 @@ export function DocumentManager() {
                       <FileText className="h-5 w-5 text-primary" />
                     </div>
                     <div>
-                      <h4 className="font-medium text-foreground">{doc.original_filename}</h4>
+                      <h4 className="font-medium text-foreground" title={doc.original_filename}>
+                        {truncateFilename(doc.original_filename)}
+                      </h4>
                       <div className="flex items-center space-x-4 text-sm text-muted-foreground">
                         <span>ID: {doc.id}</span>
                         <span>{formatFileSize(doc.file_size)}</span>
@@ -479,7 +634,7 @@ export function DocumentManager() {
                   </div>
                   
                   <div className="flex items-center space-x-3">
-                    {getStatusBadge(doc.processing_status)}
+                    {getStatusBadge(doc)}
                     
                     <div className="flex space-x-1">
                       <Button
@@ -493,8 +648,16 @@ export function DocumentManager() {
                       <Button
                         variant="ghost"
                         size="sm"
+                        onClick={() => downloadDocument(doc)}
+                        disabled={doc.processing_status !== 'completed' || doc.id < 0}
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => removeDocument(doc.id, doc.original_filename)}
-                        disabled={deletingDocument === doc.id || uploadingFiles.size > 0 || doc.id < 0}
+                        disabled={deletingDocument === doc.id || uploadingFiles.size > 0 || doc.id < 0 || ['queued', 'uploading', 'processing'].includes(doc.processing_status)}
                       >
                         {deletingDocument === doc.id ? (
                           <RefreshCw className="h-4 w-4 animate-spin text-destructive" />

@@ -171,6 +171,19 @@ export function ComplianceChecker() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Check for service unavailable message and show it prominently */}
+            {result.answer.toLowerCase().includes('llm service temporarily unavailable') && (
+              <div className="p-4 rounded-lg bg-red-50 border border-red-200">
+                <div className="flex items-center gap-2 text-red-800">
+                  <AlertTriangle className="h-5 w-5" />
+                  <span className="font-semibold">AI service temporarily unavailable</span>
+                </div>
+                <p className="text-red-700 mt-1 text-sm">
+                  Our AI answer generation is currently offline. Document excerpts are shown below.
+                </p>
+              </div>
+            )}
+            
             <div className="p-4 rounded-lg bg-accent/5 border border-accent/20">
               <div className="text-foreground leading-relaxed">
                 <ReactMarkdown
@@ -181,7 +194,7 @@ export function ComplianceChecker() {
                     strong: ({children}) => <strong className="font-semibold text-accent">{children}</strong>,
                   }}
                 >
-                  {result.answer}
+                  {result.answer.replace(/\[Note: LLM service temporarily unavailable.*?\]/gi, '').trim()}
                 </ReactMarkdown>
               </div>
             </div>
