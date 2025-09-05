@@ -377,22 +377,40 @@ function buildLLMGuidedAttribution(selectedChunks, sourcesUsed) {
     return [];
   }
   
+  console.log('=== ATTRIBUTION DEBUG ===');
+  console.log('SourcesUsed:', sourcesUsed);
+  console.log('Available chunks:', selectedChunks.length);
+  selectedChunks.forEach((chunk, i) => {
+    console.log(`Chunk ${i} metadata:`, JSON.stringify({
+      label: chunk.metadata?.label,
+      document: chunk.metadata?.document,
+      db_document_id: chunk.metadata?.db_document_id,
+      page_number: chunk.metadata?.page_number,
+      section: chunk.metadata?.section
+    }, null, 2));
+  });
+  
   const attributedSources = [];
   
   sourcesUsed.forEach(label => {
     // Find the chunk with this label
     const chunk = selectedChunks.find(c => c.metadata.label === label);
+    console.log(`Looking for chunk with label "${label}":`, chunk ? 'FOUND' : 'NOT FOUND');
     if (chunk) {
-      attributedSources.push({
+      const source = {
         document: chunk.metadata.document,
+        document_id: chunk.metadata.db_document_id || chunk.payload?.db_document_id,
         page: chunk.metadata.page_number || 'N/A',
         section: chunk.metadata.section || 'N/A', 
         excerpt: chunk.text.substring(0, 200) + (chunk.text.length > 200 ? '...' : ''),
         label: label
-      });
+      };
+      console.log('Built source:', JSON.stringify(source, null, 2));
+      attributedSources.push(source);
     }
   });
   
+  console.log('=== END ATTRIBUTION DEBUG ===');
   return attributedSources;
 }
 
@@ -419,6 +437,7 @@ function enhanceAnswerWithReferences(answer, llmGuidedSources) {
     finalSources.push({
       reference: `[${index + 1}]`,
       document: source.document,
+      document_id: source.document_id,
       page: source.page,
       section: source.section,
       excerpt: source.excerpt
@@ -522,7 +541,8 @@ app.post('/api/query', async (req, res) => {
           chunk_index: result.payload.chunk_index || chunk?.chunk_index || index,
           page_number: chunk?.page_number || null,
           section: chunk?.section || null,
-          vector_id: result.id
+          vector_id: result.id,
+          db_document_id: chunk?.document_id || null
         }
       };
     });

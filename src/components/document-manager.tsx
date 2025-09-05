@@ -50,7 +50,7 @@ export function DocumentManager() {
   // Load documents from database
   const loadDocuments = async () => {
     try {
-      const response = await fetch('http://35.209.113.236:3001/api/documents');
+      const response = await fetch('http://35.209.113.236:3001/api/documents?limit=100');
       const data: ApiResponse<CodeDocument> = await response.json();
       
       if (data.success && data.documents) {
@@ -145,6 +145,24 @@ export function DocumentManager() {
     
     for (const file of fileArray) {
       const tempId = Date.now().toString() + Math.random();
+      
+      // Immediately add document to UI with processing status
+      const tempDoc: CodeDocument = {
+        id: -tempId as any, // Temporary negative ID
+        filename: file.name,
+        original_filename: file.name,
+        file_size: file.size,
+        mime_type: file.type,
+        upload_date: new Date().toISOString(),
+        processing_status: 'processing',
+        total_chunks: 0,
+        actual_chunks: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      
+      // Add to documents list immediately
+      setDocuments(prev => [tempDoc, ...prev]);
       setUploadingFiles(prev => new Set([...prev, tempId]));
 
       try {
@@ -159,28 +177,24 @@ export function DocumentManager() {
         const data = await response.json();
         
         if (data.success) {
-          // Immediately add document to UI with processing status
-          const newDoc: CodeDocument = {
-            id: data.document_id,
-            filename: data.filename,
-            original_filename: data.filename,
-            file_size: file.size,
-            mime_type: file.type,
-            upload_date: new Date().toISOString(),
-            processing_status: 'processing',
-            total_chunks: 0,
-            actual_chunks: 0,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          };
-          
-          // Add to documents list immediately
-          setDocuments(prev => [newDoc, ...prev]);
+          // Update the temporary document with real ID and data
+          setDocuments(prev => prev.map(doc => 
+            doc.id === tempDoc.id ? {
+              ...doc,
+              id: data.document_id,
+              filename: data.filename,
+              original_filename: data.filename,
+              // Keep processing status - will be updated by polling
+            } : doc
+          ));
           
           // Start polling for status updates
           pollDocumentStatus(data.document_id, file.name, data.total_chunks, data.processing_time_ms);
           
         } else {
+          // Remove the temporary document on failure
+          setDocuments(prev => prev.filter(doc => doc.id !== tempDoc.id));
+          
           if (response.status === 409) {
             toast({
               title: "Duplicate Document",
@@ -192,6 +206,9 @@ export function DocumentManager() {
           }
         }
       } catch (error) {
+        // Remove the temporary document on error
+        setDocuments(prev => prev.filter(doc => doc.id !== tempDoc.id));
+        
         console.error('Upload error:', error);
         toast({
           title: "Upload Failed",
@@ -406,21 +423,13 @@ export function DocumentManager() {
           <div className="mt-4 text-sm text-muted-foreground space-y-1">
             <p>Supported formats: PDF, Word Documents (DOCX), Text files (TXT)</p>
             <p>Maximum file size: 50MB per file</p>
-            <p>Duplicate detection: Files are checked by content hash</p>
           </div>
         </CardContent>
       </Card>
 
       <Card className="shadow-soft border-border/50">
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>Document Library ({documents.length})</span>
-            {documents.length > 0 && (
-              <div className="text-sm text-muted-foreground">
-                Total: {documents.reduce((sum, doc) => sum + doc.total_chunks, 0)} chunks
-              </div>
-            )}
-          </CardTitle>
+          <CardTitle>Document Library</CardTitle>
         </CardHeader>
         <CardContent>
           {documents.length === 0 ? (
@@ -477,7 +486,7 @@ export function DocumentManager() {
                         variant="ghost"
                         size="sm"
                         onClick={() => viewDocument(doc)}
-                        disabled={doc.processing_status !== 'completed'}
+                        disabled={doc.processing_status !== 'completed' || doc.id < 0}
                       >
                         <Eye className="h-4 w-4" />
                       </Button>
@@ -485,7 +494,7 @@ export function DocumentManager() {
                         variant="ghost"
                         size="sm"
                         onClick={() => removeDocument(doc.id, doc.original_filename)}
-                        disabled={deletingDocument === doc.id || uploadingFiles.size > 0}
+                        disabled={deletingDocument === doc.id || uploadingFiles.size > 0 || doc.id < 0}
                       >
                         {deletingDocument === doc.id ? (
                           <RefreshCw className="h-4 w-4 animate-spin text-destructive" />
