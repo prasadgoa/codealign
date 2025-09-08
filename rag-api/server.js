@@ -314,6 +314,105 @@ app.delete('/api/documents', async (req, res) => {
   }
 });
 
+// Archive a document (removes from search but keeps for reference)
+app.post('/api/documents/:id/archive', async (req, res) => {
+  try {
+    const documentId = parseInt(req.params.id);
+    
+    if (isNaN(documentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid document ID'
+      });
+    }
+    
+    // Archive document in database (removes chunks)
+    const result = await DocumentDatabase.archiveDocument(documentId);
+    
+    // Remove vectors from Qdrant
+    let deletedVectorCount = 0;
+    if (result.vectorIds && result.vectorIds.length > 0) {
+      console.log(`Archiving: Deleting ${result.vectorIds.length} vectors from Qdrant...`);
+      
+      try {
+        const deleteResponse = await axios.post('http://172.17.0.1:6333/collections/compliance_docs/points/delete', {
+          points: result.vectorIds
+        });
+        
+        if (deleteResponse.status === 200) {
+          deletedVectorCount = result.vectorIds.length;
+          console.log(`Successfully deleted ${deletedVectorCount} vectors from Qdrant`);
+        }
+      } catch (qdrantError) {
+        console.error('Error deleting vectors from Qdrant:', qdrantError.message);
+        // Don't fail the archive operation if vector deletion fails
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Document "${result.document.original_filename}" archived successfully`,
+      document: result.document,
+      deletedChunks: result.deletedChunks,
+      deletedVectors: deletedVectorCount
+    });
+    
+  } catch (error) {
+    console.error('Error archiving document:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to archive document'
+    });
+  }
+});
+
+// Restore an archived document (makes active, needs reprocessing)
+app.post('/api/documents/:id/restore', async (req, res) => {
+  try {
+    const documentId = parseInt(req.params.id);
+    
+    if (isNaN(documentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid document ID'
+      });
+    }
+    
+    // Check if filename would conflict with active documents
+    const doc = await DocumentDatabase.getDocumentById(documentId);
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        error: 'Document not found'
+      });
+    }
+    
+    const isUsed = await DocumentDatabase.isFilenameActivelyUsed(doc.original_filename, documentId);
+    if (isUsed) {
+      return res.status(409).json({
+        success: false,
+        error: `Cannot restore: A document with filename "${doc.original_filename}" is already active. Archive or delete the existing active document first.`
+      });
+    }
+    
+    // Restore document status (chunks will be reprocessed automatically)
+    const restoredDoc = await DocumentDatabase.restoreDocument(documentId);
+    
+    res.json({
+      success: true,
+      message: `Document "${restoredDoc.original_filename}" restored successfully. It will be reprocessed and added back to search.`,
+      document: restoredDoc
+    });
+    
+  } catch (error) {
+    console.error('Error restoring document:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to restore document'
+    });
+  }
+});
+
 // Internal endpoint for n8n to store chunks
 app.post('/api/internal/store-chunks', async (req, res) => {
   try {
@@ -795,13 +894,22 @@ app.post('/api/upload-document-direct', upload.single('file'), async (req, res) 
     const docId = `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const fileHash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
     
-    // Step 2: Check for duplicates
+    // Step 2: Check for duplicates (by content hash)
     const existingDoc = await DocumentDatabase.documentExists(fileHash);
     if (existingDoc) {
       return res.status(409).json({
         success: false,
         error: 'Document already exists',
         existing_document_id: existingDoc.id
+      });
+    }
+
+    // Step 2b: Check for filename conflicts with active documents
+    const filenameUsed = await DocumentDatabase.isFilenameActivelyUsed(req.file.originalname);
+    if (filenameUsed) {
+      return res.status(409).json({
+        success: false,
+        error: `Filename "${req.file.originalname}" is already used by an active document. Please archive the existing document first or rename your file.`
       });
     }
 

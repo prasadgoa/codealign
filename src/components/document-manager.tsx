@@ -3,7 +3,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Upload, FileText, Trash2, Eye, Plus, RefreshCw, Clock, CheckCircle, XCircle, Download } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Upload, FileText, Trash2, Eye, Plus, RefreshCw, Clock, CheckCircle, XCircle, Download, Archive, ArchiveRestore } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Progress } from '@/components/ui/progress';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -16,6 +17,8 @@ interface CodeDocument {
   mime_type: string;
   upload_date: string;
   processing_status: 'queued' | 'uploading' | 'processing' | 'completed' | 'failed';
+  status: 'active' | 'archived';  // Archiving status
+  archived_date?: string;  // When document was archived
   total_chunks: number;
   actual_chunks?: number;
   created_at: string;
@@ -49,12 +52,16 @@ export function DocumentManager() {
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
   const [deletingDocument, setDeletingDocument] = useState<number | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ show: boolean; doc: CodeDocument | null }>({ show: false, doc: null });
+  const [statusFilter, setStatusFilter] = useState<'active' | 'all' | 'archived'>('active');
+  const [archiveConfirmation, setArchiveConfirmation] = useState<{ show: boolean; doc: CodeDocument | null; action: 'archive' | 'restore' }>({ show: false, doc: null, action: 'archive' });
+  const [archivingDocument, setArchivingDocument] = useState<number | null>(null);
   const { toast } = useToast();
 
   // Load documents from database
   const loadDocuments = async () => {
     try {
-      const response = await fetch('http://35.209.113.236:3001/api/documents?limit=100');
+      const filterParam = statusFilter === 'all' ? '' : `&status=${statusFilter}`;
+      const response = await fetch(`http://35.209.113.236:3001/api/documents?limit=100${filterParam}`);
       const data: ApiResponse<CodeDocument> = await response.json();
       
       if (data.success && data.documents) {
@@ -74,10 +81,10 @@ export function DocumentManager() {
     }
   };
 
-  // Load documents on component mount
+  // Load documents on component mount and when status filter changes
   useEffect(() => {
     loadDocuments();
-  }, []);
+  }, [statusFilter]);
 
   // Poll for document status updates
   const pollDocumentStatus = async (documentId: number, filename: string, expectedChunks: number, processingTime?: number) => {
@@ -315,6 +322,51 @@ export function DocumentManager() {
     }
   };
 
+  // Handle archive/restore button clicks
+  const handleArchiveClick = (doc: CodeDocument, action: 'archive' | 'restore') => {
+    setArchiveConfirmation({ show: true, doc, action });
+  };
+
+  // Confirm archive/restore operation
+  const confirmArchiveAction = async () => {
+    if (!archiveConfirmation.doc) return;
+    
+    const doc = archiveConfirmation.doc;
+    const action = archiveConfirmation.action;
+    const endpoint = action === 'archive' ? 'archive' : 'restore';
+    
+    setArchivingDocument(doc.id);
+    setArchiveConfirmation({ show: false, doc: null, action: 'archive' });
+    
+    try {
+      const response = await fetch(`http://35.209.113.236:3001/api/documents/${doc.id}/${endpoint}`, {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        toast({
+          title: action === 'archive' ? "Document Archived" : "Document Restored",
+          description: data.message,
+        });
+        
+        // Refresh document list
+        await loadDocuments();
+      } else {
+        throw new Error(data.error || `${action} failed`);
+      }
+    } catch (error) {
+      console.error(`${action} error:`, error);
+      toast({
+        title: `${action === 'archive' ? 'Archive' : 'Restore'} Failed`,
+        description: error instanceof Error ? error.message : `Failed to ${action} document`,
+        variant: "destructive",
+      });
+    } finally {
+      setArchivingDocument(null);
+    }
+  };
 
   const viewDocument = (doc: CodeDocument) => {
     // Open document in new tab/window with view action
@@ -351,60 +403,126 @@ export function DocumentManager() {
   };
 
   const getStatusBadge = (doc: CodeDocument) => {
-    const status = doc.processing_status;
+    const processingStatus = doc.processing_status;
+    const archiveStatus = doc.status || 'active'; // Default to active for temp docs
     const errorMessage = doc.error_message;
+    const isArchiving = archivingDocument === doc.id;
     
-    switch (status) {
-      case 'queued':
-        return (
-          <Badge variant="secondary">
-            Queued
-            {doc.queue_position !== undefined && doc.queue_position > 0 && (
-              <span className="ml-1">#{doc.queue_position + 1}</span>
-            )}
-          </Badge>
-        );
-      case 'uploading':
-        return (
-          <Badge variant="outline" className="animate-pulse">
-            Uploading
-          </Badge>
-        );
-      case 'processing':
-        return (
-          <Badge variant="outline" className="animate-pulse">
-            Processing
-          </Badge>
-        );
-      case 'completed':
-        return (
-          <Badge variant="default" className="bg-accent text-accent-foreground">
-            Active
-          </Badge>
-        );
-      case 'failed':
-        if (errorMessage) {
+    // Show processing status for documents that aren't completed
+    if (processingStatus !== 'completed') {
+      switch (processingStatus) {
+        case 'queued':
           return (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Badge variant="destructive" className="cursor-help">
-                    Failed
-                  </Badge>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p className="max-w-xs">{errorMessage}</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            <Badge variant="secondary">
+              Queued
+              {doc.queue_position !== undefined && doc.queue_position > 0 && (
+                <span className="ml-1">#{doc.queue_position + 1}</span>
+              )}
+            </Badge>
           );
-        }
-        return (
-          <Badge variant="destructive">
-            Failed
-          </Badge>
-        );
+        case 'uploading':
+          return (
+            <Badge variant="outline" className="animate-pulse">
+              Uploading
+            </Badge>
+          );
+        case 'processing':
+          return (
+            <Badge variant="outline" className="animate-pulse">
+              Processing
+            </Badge>
+          );
+        case 'failed':
+          if (errorMessage) {
+            return (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="destructive" className="cursor-help">
+                      Failed
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="max-w-xs">{errorMessage}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            );
+          }
+          return (
+            <Badge variant="destructive">
+              Failed
+            </Badge>
+          );
+      }
     }
+    
+    // Show clickable archive status for completed documents
+    if (archiveStatus === 'archived') {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge 
+                variant="secondary" 
+                className="cursor-pointer hover:bg-secondary/80 transition-colors"
+                onClick={() => !isArchiving && handleArchiveClick(doc, 'restore')}
+              >
+                {isArchiving ? (
+                  <>
+                    <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                    Restoring...
+                  </>
+                ) : (
+                  <>
+                    <ArchiveRestore className="h-3 w-3 mr-1" />
+                    Archived
+                  </>
+                )}
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Click to restore to active</p>
+              {doc.archived_date && (
+                <p className="text-xs opacity-75">
+                  Archived: {new Date(doc.archived_date).toLocaleDateString()}
+                </p>
+              )}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+    
+    // Show clickable active status
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge 
+              variant="default" 
+              className="bg-accent text-accent-foreground cursor-pointer hover:bg-accent/80 transition-colors"
+              onClick={() => !isArchiving && handleArchiveClick(doc, 'archive')}
+            >
+              {isArchiving ? (
+                <>
+                  <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                  Archiving...
+                </>
+              ) : (
+                <>
+                  <Archive className="h-3 w-3 mr-1" />
+                  Active
+                </>
+              )}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>Click to archive (remove from search)</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
   };
 
   const formatFileSize = (bytes: number) => {
@@ -491,7 +609,22 @@ export function DocumentManager() {
 
       <Card className="shadow-soft border-border/50">
         <CardHeader>
-          <CardTitle>Manage Knowledge Base</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Manage Knowledge Base</CardTitle>
+            <div className="flex items-center space-x-2">
+              <span className="text-sm text-muted-foreground">Show:</span>
+              <Select value={statusFilter} onValueChange={(value: 'active' | 'all' | 'archived') => setStatusFilter(value)}>
+                <SelectTrigger className="w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="archived">Archived</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           {/* Upload Progress Indicator */}
@@ -632,6 +765,52 @@ export function DocumentManager() {
               disabled={deletingDocument !== null}
             >
               {deletingDocument !== null ? 'Deleting...' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Archive/Restore Confirmation Dialog */}
+      <Dialog open={archiveConfirmation.show} onOpenChange={(open) => setArchiveConfirmation({ show: open, doc: archiveConfirmation.doc, action: archiveConfirmation.action })}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {archiveConfirmation.action === 'archive' ? 'Archive Document' : 'Restore Document'}
+            </DialogTitle>
+            <DialogDescription>
+              {archiveConfirmation.action === 'archive' ? (
+                <>
+                  Are you sure you want to archive "{archiveConfirmation.doc ? truncateFilename(archiveConfirmation.doc.original_filename) : ''}"?
+                  <br />
+                  <br />
+                  This will remove it from search results but keep it available for viewing and downloading.
+                </>
+              ) : (
+                <>
+                  Are you sure you want to restore "{archiveConfirmation.doc ? truncateFilename(archiveConfirmation.doc.original_filename) : ''}" to active status?
+                  <br />
+                  <br />
+                  The document will be reprocessed and added back to search results.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setArchiveConfirmation({ show: false, doc: null, action: 'archive' })}
+            >
+              Cancel
+            </Button>
+            <Button 
+              variant={archiveConfirmation.action === 'archive' ? 'default' : 'default'}
+              onClick={confirmArchiveAction}
+              disabled={archivingDocument !== null}
+            >
+              {archivingDocument !== null ? 
+                (archiveConfirmation.action === 'archive' ? 'Archiving...' : 'Restoring...') : 
+                (archiveConfirmation.action === 'archive' ? 'Archive' : 'Restore')
+              }
             </Button>
           </DialogFooter>
         </DialogContent>

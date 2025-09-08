@@ -120,8 +120,9 @@ class DocumentDatabase {
     const values = [];
     let paramCount = 0;
 
-    if (statusFilter) {
-      query += ` WHERE d.processing_status = $${++paramCount}`;
+    // Filter by archive status (active/archived) instead of processing_status
+    if (statusFilter && statusFilter !== 'all') {
+      query += ` WHERE d.status = $${++paramCount}`;
       values.push(statusFilter);
     }
 
@@ -253,6 +254,80 @@ class DocumentDatabase {
     
     const result = await pool.query(query, vectorIds);
     return result.rows;
+  }
+
+  // Archive a document (removes chunks from vector DB but keeps document)
+  static async archiveDocument(documentId) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Update document status to archived
+      const updateQuery = `
+        UPDATE documents 
+        SET status = 'archived', archived_date = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'active'
+        RETURNING *
+      `;
+      const docResult = await client.query(updateQuery, [documentId]);
+      
+      if (docResult.rows.length === 0) {
+        throw new Error('Document not found or already archived');
+      }
+      
+      // Get all chunk vector IDs for this document
+      const chunkQuery = 'SELECT vector_id FROM document_chunks WHERE document_id = $1';
+      const chunkResult = await client.query(chunkQuery, [documentId]);
+      const vectorIds = chunkResult.rows.map(row => row.vector_id);
+      
+      // Delete chunks from database
+      const deleteChunksQuery = 'DELETE FROM document_chunks WHERE document_id = $1';
+      const deleteResult = await client.query(deleteChunksQuery, [documentId]);
+      
+      await client.query('COMMIT');
+      
+      return {
+        document: docResult.rows[0],
+        deletedChunks: deleteResult.rowCount,
+        vectorIds: vectorIds // Return for vector DB cleanup
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Restore an archived document (status only - chunks need to be reprocessed)
+  static async restoreDocument(documentId) {
+    const query = `
+      UPDATE documents 
+      SET status = 'active', archived_date = NULL, processing_status = 'processing', updated_at = NOW()
+      WHERE id = $1 AND status = 'archived'
+      RETURNING *
+    `;
+    const result = await pool.query(query, [documentId]);
+    
+    if (result.rows.length === 0) {
+      throw new Error('Document not found or not archived');
+    }
+    
+    return result.rows[0];
+  }
+
+  // Check if filename is already used by active documents
+  static async isFilenameActivelyUsed(filename, excludeDocumentId = null) {
+    let query = 'SELECT id FROM documents WHERE original_filename = $1 AND status = $2';
+    const values = [filename, 'active'];
+    
+    if (excludeDocumentId) {
+      query += ' AND id != $3';
+      values.push(excludeDocumentId);
+    }
+    
+    const result = await pool.query(query, values);
+    return result.rows.length > 0;
   }
 
   // Health check
