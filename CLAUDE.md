@@ -917,9 +917,75 @@ sudo systemctl status rag-api
 ### Overview
 The Marshal Fire Department system uses a comprehensive color configuration system that allows easy customization of all UI colors through a centralized configuration file. All colors are organized by functional areas and support multiple themes.
 
+**IMPORTANT FOR CLAUDE**: When asked to modify colors, always follow the **5-Color Architecture Framework** documented below. Present options that adhere to this professional design system.
+
 ### Configuration Files
 - **Color Config**: `/src/config/colors.ts` - Main color configuration with predefined themes
 - **Branding Config**: `/src/config/branding.ts` - Text and branding configuration
+
+## **5-Color Architecture Framework** 🎨
+
+### **Professional Design System (MUST FOLLOW)**
+
+This system uses **exactly 5 core colors** for optimal visual hierarchy, professional appearance, and brand consistency. When creating new themes or modifying colors, strictly adhere to this architecture.
+
+#### **Color Architecture:**
+
+**1. PRIMARY Brand Color** ⭐
+- **Purpose**: Main brand identity and primary actions
+- **Elements**: Logo main, primary buttons, active navigation links, key highlights
+- **Rule**: ALL these elements MUST use the same color for brand consistency
+
+**2. SECONDARY Accent Color** 🎯  
+- **Purpose**: Supporting brand elements and secondary actions
+- **Elements**: Logo shields/badges, secondary buttons, warning states, important highlights
+- **Rule**: Provides visual interest while maintaining clear hierarchy from primary
+
+**3. SUCCESS/STATUS Color** ✅
+- **Purpose**: Positive feedback and active states
+- **Elements**: Success messages, active status badges, confirmations, positive indicators
+- **Rule**: ALL positive status elements must share this color for consistency
+
+**4. NEUTRAL Base Color** ⚪
+- **Purpose**: Clean, professional foundation
+- **Elements**: All backgrounds, light text on dark elements, clean spaces
+- **Rule**: Creates cohesive, uncluttered appearance
+
+**5. NEUTRAL Text/Border System** ⚫
+- **Purpose**: Content hierarchy and structure  
+- **Elements**: All text (various weights), borders, dividers, inactive states, secondary backgrounds
+- **Rule**: Single color family with opacity/weight variations for hierarchy
+
+#### **Color Sharing Rules:**
+
+**✅ MUST Share Color (Collapse):**
+- Logo + Primary Buttons + Active Nav = **PRIMARY COLOR**
+- All Success States + Active Badges = **SUCCESS COLOR**  
+- All Backgrounds + Clean Spaces = **NEUTRAL BASE**
+- All Text + All Borders = **NEUTRAL SYSTEM** (opacity variations)
+
+**❌ MUST Separate (Different Colors):**
+- Primary vs Secondary importance levels
+- Success vs Warning vs Error states  
+- Brand elements vs Content elements
+- Active vs Inactive states
+
+#### **Benefits of 5-Color System:**
+- **Professional appearance** - Not overwhelming, maintains authority
+- **Clear hierarchy** - Each color has distinct functional purpose
+- **Brand consistency** - Consolidated color usage strengthens identity
+- **Scalable design** - Works for simple and complex interfaces
+- **Accessible** - Sufficient contrast options without confusion
+
+### **Implementation for New Themes:**
+
+When creating themes for different customers (fire, police, medical, corporate), follow this process:
+
+1. **Choose PRIMARY color** based on industry standards
+2. **Select SECONDARY accent** that complements primary (often metallic: gold, silver, bronze)
+3. **Define SUCCESS color** (typically green, but can be industry-appropriate)
+4. **Set NEUTRAL base** (usually white or very light gray)
+5. **Configure NEUTRAL text system** (gray family with consistent relationships)
 
 ### Available Color Themes
 
@@ -1015,7 +1081,43 @@ footer: {
 }
 ```
 
-### How to Change Colors
+### **How Claude Should Present Color Options** 🤖
+
+**IMPORTANT**: When user requests color changes, ALWAYS:
+
+1. **Present 3-4 Complete Theme Options** following the 5-Color Architecture
+2. **Show each option as:**
+   ```
+   ## Option 1: [Industry Name] Theme
+   - PRIMARY: [Color] - Logo, primary buttons, active nav
+   - SECONDARY: [Color] - Logo accents, secondary actions  
+   - SUCCESS: [Color] - Active badges, success states
+   - NEUTRAL BASE: [Color] - All backgrounds
+   - NEUTRAL SYSTEM: [Gray family] - Text and borders
+   
+   **Best for**: [Industry/use case]
+   **Mood**: [Professional descriptor]
+   ```
+
+3. **Ask user to select preferred option** before implementing
+4. **Explain why each option follows professional design principles**
+5. **Show visual hierarchy example** for selected option
+
+**Example Response Format:**
+"Based on your requirements, here are 3 professionally-designed color options following our 5-Color Architecture Framework:"
+
+[Present options as above]
+
+"Which option appeals to you most? I'll then implement the complete theme while maintaining our design system's consistency rules."
+
+### How to Change Colors ⚠️ **CRITICAL IMPLEMENTATION NOTES**
+
+**🔥 IMPORTANT**: The color architecture has **TWO SYSTEMS** that must work together:
+
+1. **Component Colors** (`/src/config/colors.ts`) - Logo, navigation, specific elements
+2. **CSS Variables** (`/src/index.css`) - Primary buttons, gradients, shadcn/ui components
+
+**Both must be updated together** for logo and buttons to match with gradations!
 
 #### Method 1: Switch to Existing Theme
 1. Edit `/src/config/colors.ts`
@@ -1025,22 +1127,61 @@ export const getColorConfig = (themeName: ThemeName = 'police'): ColorConfig => 
   return colorThemes[themeName];
 };
 ```
-3. Run `npm run build` to apply changes
+3. **CRITICAL**: Update CSS variables in `/src/index.css` to match:
+```css
+--primary: [HSL_VALUES];        // Convert rgb() to HSL
+--primary-glow: [HSL_VALUES];   // Lighter version for gradients
+--accent: [HSL_VALUES];         // Same as primary
+--accent-glow: [HSL_VALUES];    // Same as primary-glow
+```
+4. Run `npm run build` to apply changes
 
-#### Method 2: Customize Individual Colors
-1. Edit `/src/config/colors.ts`
-2. Modify specific color values in the active theme:
+#### Method 2: Customize Individual Colors  
+1. **Step A**: Edit `/src/config/colors.ts`
 ```typescript
 export const fireTheme: ColorConfig = {
   logo: {
-    primary: "rgb(YOUR_COLOR_HERE)",        // Change logo colors
-    primaryEnd: "rgb(YOUR_COLOR_HERE)",
+    primary: "rgb(153, 27, 27)",        // Burgundy - PRIMARY color
+    primaryEnd: "rgb(127, 29, 29)",     // Darker burgundy for gradient
+    secondary: "rgb(245, 158, 11)",     // Gold - SECONDARY color
     // ... other colors
   },
+  navigation: {
+    companyText: "rgb(153, 27, 27)",    // MUST match logo primary
+    linkActive: "rgb(153, 27, 27)",     // MUST match logo primary
+    activeBorder: "rgb(153, 27, 27)",   // MUST match logo primary
+  },
+  footer: {
+    companyHighlight: "rgb(153, 27, 27)", // MUST match logo primary
+  }
   // ... other sections
 };
 ```
+
+2. **Step B**: Edit `/src/index.css` CSS variables to match PRIMARY color:
+```css
+/* Light mode */
+--primary: 0 70% 35%;           // rgb(153,27,27) converted to HSL
+--primary-glow: 0 70% 50%;      // Lighter for gradient effect
+--accent: 0 70% 35%;            // Same as primary
+--accent-glow: 0 70% 50%;       // Same as primary-glow
+
+/* Dark mode */  
+--primary: 0 70% 45%;           // Slightly lighter for dark mode
+--primary-glow: 0 70% 60%;      // Lighter for gradient effect
+--accent: 0 70% 45%;            // Same as primary
+--accent-glow: 0 70% 60%;       // Same as primary-glow
+```
+
 3. Run `npm run build` to apply changes
+
+#### **Color Conversion Tool** (RGB to HSL):
+When changing PRIMARY color, convert rgb() values to HSL for CSS variables:
+- **RGB(153, 27, 27)** = **HSL(0, 70%, 35%)**
+- **RGB(220, 38, 38)** = **HSL(0, 82%, 51%)**  
+- **RGB(185, 28, 28)** = **HSL(0, 74%, 42%)**
+
+**For gradients**: Make `-glow` version 10-15% higher lightness than base
 
 #### Method 3: Create New Theme
 1. Add new theme to `/src/config/colors.ts`:
@@ -1086,12 +1227,73 @@ npm run build
 # Changes are immediately live - no server restart needed
 ```
 
+### **Gradient System Architecture** 🎨
+
+**CRITICAL DISCOVERY**: The system uses **CSS gradient variables** for beautiful button gradations:
+
+#### **How Gradients Work:**
+```css
+/* Gradient definitions in /src/index.css */
+--gradient-primary: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary-glow)));
+--gradient-accent: linear-gradient(135deg, hsl(var(--accent)), hsl(var(--accent-glow)));
+
+/* These create the beautiful gradations you see on buttons and UI elements */
+```
+
+#### **Key Gradient Rules:**
+1. **Primary buttons** automatically use `--gradient-primary` 
+2. **Logo gradients** are defined separately in `/src/config/colors.ts`
+3. **Both systems must match** for logo and buttons to look coordinated
+4. **Gradient contrast**: `-glow` should be 10-15% lighter than base color
+
+#### **When Gradients Break:**
+- ❌ **Buttons show flat color**: CSS variables don't match component colors
+- ❌ **No visible gradient**: `-glow` value too close to base color  
+- ❌ **Colors don't match**: Only updated one system, not both
+
+#### **Perfect Gradient Setup:**
+- ✅ **Component colors** (logo): `primary: "rgb(153, 27, 27)"`
+- ✅ **CSS variables**: `--primary: 0 70% 35%; --primary-glow: 0 70% 50%;`
+- ✅ **Result**: Logo and buttons match with beautiful gradations
+
+### **Design System Maintenance Rules** 📐
+
+**CRITICAL**: All future color modifications MUST follow these principles:
+
+#### **Never Do:**
+- ❌ Add 6th or 7th core color without strong justification
+- ❌ Use different colors for same functional elements
+- ❌ Create one-off colors for specific features
+- ❌ Break the established element-to-color mappings
+
+#### **Always Do:**
+- ✅ Map new UI elements to existing 5-color system
+- ✅ Use color variations (opacity, tints, shades) before adding new colors
+- ✅ Maintain element-color consistency across all themes
+- ✅ Test color combinations for accessibility compliance
+- ✅ Present multiple professional options before implementing
+
+#### **When to Consider 6th Color:**
+Only if you can clearly justify:
+1. **Distinct functional purpose** not covered by existing 5 colors
+2. **Critical user experience need** for differentiation
+3. **Industry standard requirement** (e.g., medical emergency red)
+4. **Accessibility compliance** necessity
+
+#### **Color Hierarchy Testing:**
+Before finalizing any theme:
+1. **Visual scan test**: Can user immediately identify most important elements?
+2. **Functional clarity**: Are different button types clearly distinguishable?
+3. **Brand consistency**: Does primary color dominate appropriately?
+4. **Professional assessment**: Does it look authoritative and trustworthy?
+
 ### Future Enhancement Ideas
 - **Theme persistence**: Save user's preferred theme in localStorage
 - **Dynamic theme switching**: Add theme selector in UI
-- **Dark mode support**: Add dark theme variations
+- **Dark mode support**: Add dark theme variations (following same 5-color structure)
 - **Brand customization API**: Allow theme changes via admin panel
 - **CSS custom properties**: Generate CSS variables automatically
+- **Industry theme library**: Expand themes for healthcare, corporate, government sectors
 
 ## Important Notes
 1. **Frontend changes**: Just `npm run build` - much faster

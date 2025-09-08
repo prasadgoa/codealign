@@ -60,25 +60,25 @@ export interface ColorConfig {
   };
 }
 
-// Fire Department Theme (Default)
+// Fire Department Theme (Option 3: Premium Fire Department)
 export const fireTheme: ColorConfig = {
   logo: {
-    primary: "rgb(185, 28, 28)",        // red-700
-    primaryEnd: "rgb(127, 29, 29)",     // red-900
-    secondary: "rgb(245, 158, 11)",     // amber-500
-    secondaryEnd: "rgb(217, 119, 6)",   // amber-600
-    icon: "rgb(255, 255, 255)",         // white
+    primary: "rgb(153, 27, 27)",        // Rich Crimson Red - PRIMARY
+    primaryEnd: "rgb(127, 29, 29)",     // Gradient end - PRIMARY darker
+    secondary: "rgb(245, 158, 11)",     // Antique Gold - SECONDARY
+    secondaryEnd: "rgb(217, 119, 6)",   // Gold gradient end - SECONDARY darker
+    icon: "rgb(255, 255, 255)",         // NEUTRAL BASE
   },
   
   navigation: {
-    background: "rgb(255, 255, 255)",   // white
-    border: "rgb(229, 231, 235)",       // gray-200
-    titleText: "rgb(17, 24, 39)",       // gray-900
-    taglineText: "rgb(75, 85, 99)",     // gray-600
-    companyText: "rgb(185, 28, 28)",    // red-700
-    linkInactive: "rgb(55, 65, 81)",    // gray-700
-    linkActive: "rgb(220, 38, 38)",     // red-600
-    activeBorder: "rgb(220, 38, 38)",   // red-600
+    background: "rgb(255, 255, 255)",   // NEUTRAL BASE
+    border: "rgb(229, 231, 235)",       // NEUTRAL SYSTEM
+    titleText: "rgb(17, 24, 39)",       // NEUTRAL SYSTEM
+    taglineText: "rgb(75, 85, 99)",     // NEUTRAL SYSTEM
+    companyText: "rgb(153, 27, 27)",    // PRIMARY
+    linkInactive: "rgb(55, 65, 81)",    // NEUTRAL SYSTEM
+    linkActive: "rgb(153, 27, 27)",     // PRIMARY
+    activeBorder: "rgb(153, 27, 27)",   // PRIMARY
   },
   
   statusBadges: {
@@ -104,16 +104,16 @@ export const fireTheme: ColorConfig = {
     error: {
       background: "rgb(254, 242, 242)",  // red-50
       border: "rgb(254, 202, 202)",      // red-200
-      titleText: "rgb(153, 27, 27)",     // red-800
-      bodyText: "rgb(185, 28, 28)",      // red-700
+      titleText: "rgb(127, 29, 29)",     // Darker crimson for authority
+      bodyText: "rgb(153, 27, 27)",      // PRIMARY (updated to match theme)
     },
   },
   
   footer: {
-    background: "rgb(255, 255, 255)",   // white
-    border: "rgb(229, 231, 235)",       // gray-200
-    text: "rgb(75, 85, 99)",            // gray-600
-    companyHighlight: "rgb(220, 38, 38)", // red-600
+    background: "rgb(255, 255, 255)",   // NEUTRAL BASE
+    border: "rgb(229, 231, 235)",       // NEUTRAL SYSTEM
+    text: "rgb(75, 85, 99)",            // NEUTRAL SYSTEM
+    companyHighlight: "rgb(153, 27, 27)", // PRIMARY
   },
 };
 
