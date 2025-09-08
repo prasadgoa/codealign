@@ -1,15 +1,9 @@
-# RAG Compliance System - Complete Project Documentation
+# Marshal Fire Department Management System
 
 ## Project Overview
-A Retrieval-Augmented Generation (RAG) system for compliance document processing and intelligent querying. Users upload compliance documents (PDF, DOCX, TXT) which are processed, chunked, embedded, and stored for semantic search-based question answering with source attribution.
+**Marshal** is a fire department management platform with three modules: **Dashboard** (coming soon), **Knowledge Base** (active), and **Reports** (coming soon). The Knowledge Base features a RAG system for compliance document processing and AI-powered querying of fire safety and building codes.
 
-Key Features:
-- Multi-format document support (PDF, DOCX, TXT)
-- Intelligent chunking with page-aware processing
-- Cross-encoder reranking for improved retrieval accuracy
-- Dynamic chunk selection based on query complexity
-- Source attribution with inline citations
-- RESTful API for document management and querying
+**Current Status**: Knowledge Base fully operational with document upload, AI assistant, semantic search, and source attribution. Dashboard and Reports modules show professional "coming soon" placeholders.
 
 ## System Architecture
 
@@ -29,7 +23,7 @@ Express.js endpoint → Query classification (definition/specific_section/list/y
 
 ### rag-vm Services (35.209.113.236)
 - **Express API Server**: Port 3001 (`http://35.209.113.236:3001`) - Main RAG API with all endpoints
-- **React Frontend**: Port 3000 (`http://35.209.113.236:3000`) - Document manager and query interface
+- **React Frontend**: Port 3000 (`http://35.209.113.236:3000`) - Marshal Fire Department Management System with three-module architecture
 - **Apache Tika**: Port 9998 (`http://35.209.113.236:9998`) - Document text extraction service
 - **TEI Embedding Service**: Port 8081 (Docker: `http://172.17.0.1:8081`) - Text embeddings (e5-small-v2 model)
 - **Qdrant Vector DB**: Port 6333 (Docker: `http://172.17.0.1:6333`) - Vector storage and similarity search
@@ -168,211 +162,21 @@ curl -X PUT "http://172.17.0.1:6333/collections/compliance_docs" \
   -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
 ```
 
-## Tech Stack
 
-### Core Technologies
+## Deployment Workflow
 
-#### Backend Services
-- **Express.js 4.x** - RESTful API server with comprehensive document management endpoints
-- **Node.js 18+** - JavaScript runtime
-- **PostgreSQL 15** - Relational database for document metadata and chunk storage
-- **Qdrant 1.x** - High-performance vector database for semantic similarity search
-
-#### AI/ML Services
-- **Apache Tika 2.x** - Multi-format document text extraction with page detection
-- **TEI (Text Embeddings Inference)** - Fast embedding service
-  - Model: `e5-small-v2` (384 dimensions)
-  - Optimized for semantic search
-- **Cross-Encoder Reranking** - Second-stage ranking
-  - Model: `ms-marco-MiniLM-L-6-v2`
-  - Improves retrieval precision
-- **vLLM** - High-throughput LLM inference server
-  - Model: `Llama 3.1-8B-Instruct`
-  - OpenAI-compatible API
-  - Context window: 8192 tokens
-
-#### Frontend
-- **React 18** - Component-based UI framework
-- **TypeScript** - Type-safe development
-- **Tailwind CSS** - Utility-first styling
-- **shadcn/ui** - Accessible component library
-- **Vite** - Fast build tooling
-
-### Supporting Libraries
-
-#### Document Processing
-- **multer** - File upload handling
-- **uuid** - Unique identifier generation
-- **crypto** - SHA-256 hash generation for duplicate detection
-
-#### AI/ML Integration
-- **@xenova/transformers** - JavaScript transformers for cross-encoder reranking
-- **axios** - HTTP client for service communication
-
-#### Database
-- **pg (node-postgres)** - PostgreSQL client
-- **Custom DocumentDatabase class** - Abstraction layer for database operations
-
-### Infrastructure & DevOps
-
-#### Containerization
-- **Docker** - Service containerization (PostgreSQL, Qdrant, TEI)
-- **Docker Compose** - Multi-container orchestration
-
-#### Service Management
-- **systemd** - Linux service management
-- **systemctl** - Service control interface
-- **journalctl** - Service log management
-
-#### Monitoring & Debugging
-- **Comprehensive logging** - Timing metrics, chunk selection profiling
-- **Health check endpoints** - Service availability monitoring
-
-### Development Tools
-- **n8n** - Workflow automation (legacy, being phased out)
-- **curl** - API testing
-- **jq** - JSON processing
-
-## File Structure
-
-### Source Code (`/home/prasadk/codealign/`)
-**Important:** This is where you edit files. Changes must be deployed using:
-```bash
-sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
-sudo systemctl restart rag-api
-```
-
-#### Backend Source (`/home/prasadk/codealign/rag-api/`)
-```
-rag-api/
-├── server.js              # Express API server with all endpoints
-├── database.js            # DocumentDatabase class for PostgreSQL operations  
-├── enhancedChunking.js    # Chunking, reranking, and prompt generation
-├── pageExtractor.js       # Page detection and extraction logic
-├── package.json           # Node.js dependencies
-├── package-lock.json      # Locked dependency versions
-└── uploads/               # Temporary file storage during processing
-```
-
-#### Frontend Source (`/home/prasadk/codealign/`)
-```
-├── src/
-│   ├── components/
-│   │   ├── document-manager.tsx      # Document CRUD UI with file upload
-│   │   ├── compliance-checker.tsx    # Query interface with attribution display
-│   │   └── ui/                      # shadcn/ui components
-│   ├── pages/
-│   │   └── Index.tsx                 # Main application page
-│   └── lib/
-│       └── utils.ts                  # Utility functions
-├── public/                           # Static assets
-├── dist/                            # Built React app
-├── package.json                     # Frontend dependencies
-├── tsconfig.json                    # TypeScript configuration
-├── tailwind.config.js               # Tailwind CSS configuration
-├── vite.config.ts                   # Vite build configuration
-└── CLAUDE.md                        # This documentation file
-```
-
-### Deployed/Runtime Locations
-
-#### Backend Deployment (`/opt/rag-api/`)
-```
-/opt/rag-api/                        # DEPLOYED VERSION - DO NOT EDIT DIRECTLY
-├── server.js                        # Running API server
-├── database.js                      # Database operations
-├── enhancedChunking.js             # Chunking and reranking
-├── pageExtractor.js                # Page extraction
-├── package.json                    
-├── node_modules/                    # Installed dependencies
-└── uploads/                         # Document upload directory
-```
-
-#### Frontend Deployment
-```
-/home/prasadk/codealign/dist/        # Built React app served on port 3000
-```
-
-#### Service Configuration
-```
-/etc/systemd/system/rag-api.service  # systemd service definition
-```
-
-#### Database Files
-```
-Docker volumes:
-- PostgreSQL data: /var/lib/docker/volumes/postgres-rag-data
-- Qdrant data: /var/lib/docker/volumes/qdrant-storage
-```
-
-### Legacy/Archived
-```
-/home/prasadk/codealign/workflows/   # n8n workflow definitions (not actively used)
-├── upload-document-workflow.json
-└── query-compliance-workflow.json
-```
-
-### Important Notes
-1. **Always edit source files** in `/home/prasadk/codealign/rag-api/`
-2. **Deploy changes** with: `sudo cp -r ~/codealign/rag-api/* /opt/rag-api/`
-3. **Restart service** after deployment: `sudo systemctl restart rag-api`
+### Source → Production
+1. **Edit source files** in `/home/prasadk/codealign/rag-api/`
+2. **Deploy to production**: `sudo cp -r ~/codealign/rag-api/* /opt/rag-api/`
+3. **Restart service**: `sudo systemctl restart rag-api`
 4. **Frontend auto-builds** from source location
-5. **Never edit** files directly in `/opt/rag-api/`
 
-## Current Implementation Status
+### Key Locations
+- **Source**: `/home/prasadk/codealign/rag-api/` (edit here)
+- **Production**: `/opt/rag-api/` (deployed, don't edit directly)
+- **Frontend**: `/home/prasadk/codealign/dist/` (built Marshal UI)
+- **Service Config**: `/etc/systemd/system/rag-api.service`
 
-### Phase 1: Core Infrastructure - COMPLETE ✅
-- PostgreSQL database with full schema
-- Qdrant vector database configured
-- Express.js API server operational
-- React frontend with document manager
-- Docker services running (PostgreSQL, Qdrant, TEI)
-- vLLM inference server on separate VM
-
-### Phase 2: Document Processing - COMPLETE ✅
-- Multi-format support (PDF, DOCX, TXT)
-- Apache Tika text extraction with page detection
-- Enhanced chunking (1500 chars, 200 overlap)
-- TEI embedding generation (e5-small-v2)
-- Duplicate detection via SHA-256 hashing
-- Metadata extraction (sections, page numbers)
-
-### Phase 3: Advanced Retrieval - COMPLETE ✅
-- Query classification (5 types: definition, specific_section, list, yes_no, general)
-- Vector search with 300 candidate retrieval
-- Cross-encoder reranking (ms-marco-MiniLM-L-6-v2)
-- Hybrid vector-first selection algorithm
-- Dynamic chunk selection (1-15 chunks based on query type)
-- Token budget management
-
-### Phase 4: Answer Generation - COMPLETE ✅
-- vLLM/Llama 3.1-8B integration
-- System prompt configuration for compliance advisor
-- Labeled source context [A][B][C]
-- Citation parsing and mapping to [1][2][3]
-- Source attribution with document references
-- LLM health checks for availability
-
-### Phase 5: Quality Optimizations - COMPLETE ✅
-- Increased retrieval limit for comprehensive coverage
-- Adaptive quality gates in chunk selection
-- Performance profiling and timing metrics
-- Improved prompt engineering for citation compliance
-
-### Known Issues & Future Improvements
-
-#### To Fix:
-- Remove temporary prompt logging from server.js
-- System prompt on vLLM needs stricter citation format enforcement
-
-#### Future Enhancements:
-- Query expansion for semantic gap issues (e.g., "fire" vs "incident")
-- Hybrid keyword + vector search
-- Caching layer for frequently accessed chunks
-- Admin dashboard for system monitoring
-- Batch document upload support
-- Export query results to PDF/Word
-- User authentication and multi-tenancy
 
 ## API Endpoints
 
