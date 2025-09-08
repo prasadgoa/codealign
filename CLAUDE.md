@@ -1,19 +1,25 @@
 # RAG Compliance System - Complete Project Documentation
 
 ## Project Overview
-A Retrieval-Augmented Generation (RAG) system for compliance document processing and querying. Users upload compliance documents (PDF, DOCX, TXT) which are processed, chunked, embedded, and stored for semantic search-based question answering.
+A Retrieval-Augmented Generation (RAG) system for compliance document processing and intelligent querying. Users upload compliance documents (PDF, DOCX, TXT) which are processed, chunked, embedded, and stored for semantic search-based question answering with source attribution.
+
+Key Features:
+- Multi-format document support (PDF, DOCX, TXT)
+- Intelligent chunking with page-aware processing
+- Cross-encoder reranking for improved retrieval accuracy
+- Dynamic chunk selection based on query complexity
+- Source attribution with inline citations
+- RESTful API for document management and querying
 
 ## System Architecture
 
 ### Document Processing Pipeline
-**Method 1: n8n Workflow (Currently has format issues)**
-n8n → File upload webhook → Apache Tika (text extraction) → Text chunking → Hugging Face TEI (embeddings) → Qdrant (vector storage) → PostgreSQL (metadata)
 
-**Method 2: Direct API Upload (Recommended - Working)**
-Express.js endpoint → Tika → Chunking → TEI → Qdrant → PostgreSQL (all in one API call)
+### Document Upload Pipeline
+Express.js endpoint → Apache Tika (text extraction with page detection) → Enhanced chunking (1500 chars with 200 overlap) → TEI embeddings (e5-small-v2) → Qdrant vector storage → PostgreSQL metadata → Response with document ID
 
-### Query Pipeline
-n8n → Query webhook → TEI (question embedding) → Qdrant search → Llama 3.1-8B (answer generation) → Response with source attribution
+### Query Pipeline  
+Express.js endpoint → Query classification (definition/specific_section/list/yes_no/general) → TEI embedding → Qdrant vector search (300 candidates) → Cross-encoder reranking (ms-marco-MiniLM) → Dynamic chunk selection (1-15 based on query type) → Prompt generation with labeled sources [A][B][C] → vLLM/Llama 3.1-8B → Citation parsing & mapping → Response with numbered references [1][2][3]
 
 ## Infrastructure Setup
 
@@ -22,550 +28,1002 @@ n8n → Query webhook → TEI (question embedding) → Qdrant search → Llama 3
 2. **gpt20b** (35.209.219.117) - LLM inference server
 
 ### rag-vm Services (35.209.113.236)
-- **n8n Workflow Engine**: Port 5678 (`http://35.209.113.236:5678`)
-- **Express API Server**: Port 3001 (`http://35.209.113.236:3001`)
-- **React Frontend**: Port 3000 (`http://35.209.113.236:3000`)
-- **Apache Tika**: Port 9998 (`http://35.209.113.236:9998`)
-- **TEI Embedding Service**: Port 8081 (internal Docker: `http://172.17.0.1:8081`)
-- **Qdrant Vector DB**: Port 6333 (internal Docker: `http://172.17.0.1:6333`)
-- **PostgreSQL**: Port 5433 (Docker container: `postgres-rag`)
+- **Express API Server**: Port 3001 (`http://35.209.113.236:3001`) - Main RAG API with all endpoints
+- **React Frontend**: Port 3000 (`http://35.209.113.236:3000`) - Document manager and query interface
+- **Apache Tika**: Port 9998 (`http://35.209.113.236:9998`) - Document text extraction service
+- **TEI Embedding Service**: Port 8081 (Docker: `http://172.17.0.1:8081`) - Text embeddings (e5-small-v2 model)
+- **Qdrant Vector DB**: Port 6333 (Docker: `http://172.17.0.1:6333`) - Vector storage and similarity search
+- **PostgreSQL**: Port 5433 (Docker container: `postgres-rag`) - Document and chunk metadata
+- **Cross-Encoder Service**: In-process with API server - ms-marco-MiniLM reranking model
+- **n8n Workflow Engine**: Port 5678 (`http://35.209.113.236:5678`) - Legacy, not actively used
 
 ### gpt20b Services (35.209.219.117)
-- **vLLM + Llama 3.1-8B**: Port 8000 (`http://35.209.219.117:8000`)
+- **vLLM + Llama 3.1-8B-Instruct**: Port 8000 (`http://35.209.219.117:8000`)
+  - OpenAI-compatible API endpoint
+  - System prompt configured at startup for compliance advisor role
+  - Model context: 8192 tokens
+  - Temperature: 0.3 for consistent responses
 
 ### Networking
-- **Docker bridge**: 172.17.0.1 for internal service communication
-- **Firewall ports**: 9998, 8081, 8000, 6333, 3000, 5678, 3001, 5433
+- **Docker bridge**: 172.17.0.1 for internal service communication (TEI, Qdrant, PostgreSQL)
+- **External API access**: Direct HTTP to service ports
+- **Open firewall ports**:
+  - 3000: React frontend
+  - 3001: Express API server
+  - 5433: PostgreSQL (Docker)
+  - 5678: n8n workflows (legacy)
+  - 6333: Qdrant vector DB
+  - 8000: vLLM inference (gpt20b)
+  - 8081: TEI embeddings
+  - 9998: Apache Tika
 
 ## Database Configuration
 
 ### PostgreSQL (Container: postgres-rag)
+**Connection Details:**
 ```bash
-Host: localhost (35.209.113.236)
+Host: localhost (from rag-vm) or 35.209.113.236 (external)
 Port: 5433
 Database: rag_system
 User: rag_user
 Password: rag_secure_2025
 Container: postgres-rag
-
-# Connection test:
-docker exec -it postgres-rag psql -U rag_user -d rag_system -c "\dt"
 ```
 
-### Database Schema
-- **documents**: Document metadata (id, filename, file_size, processing_status, etc.)
-- **document_chunks**: Chunk metadata (document_id, vector_id, text, chunk_index, etc.)
-- **processing_logs**: Processing step logs (document_id, step, status, message, timing)
+**Database Schema:**
+
+**documents table:**
+- `id`: Serial primary key
+- `filename`: Original filename (unique constraint)
+- `file_hash`: SHA-256 hash for duplicate detection
+- `file_size`: Size in bytes
+- `mime_type`: Detected MIME type
+- `upload_date`: Timestamp of upload
+- `processing_status`: 'pending', 'processing', 'completed', 'failed'
+- `total_chunks`: Number of chunks created
+- `error_message`: Error details if failed
+- `metadata`: JSONB for additional properties
+
+**document_chunks table:**
+- `id`: Serial primary key
+- `document_id`: Foreign key to documents
+- `vector_id`: UUID for Qdrant reference
+- `chunk_index`: Sequential index within document
+- `text`: Full chunk text
+- `start_offset`: Character start position
+- `end_offset`: Character end position
+- `page_number`: Extracted page number (nullable)
+- `section`: Extracted section header (nullable)
+- `created_at`: Timestamp
+
+**processing_logs table:**
+- `id`: Serial primary key
+- `document_id`: Foreign key to documents
+- `step`: Processing step name
+- `status`: 'started', 'completed', 'failed'
+- `message`: Log message
+- `error_details`: Error information (nullable)
+- `started_at`: Step start time
+- `completed_at`: Step completion time
+
+**Common Queries:**
+```bash
+# Connection test:
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "\dt"
+
+# Check documents:
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "SELECT id, filename, processing_status, total_chunks FROM documents ORDER BY upload_date DESC;"
+
+# Check chunk distribution:
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "SELECT document_id, COUNT(*) as chunks, MIN(page_number) as first_page, MAX(page_number) as last_page FROM document_chunks GROUP BY document_id;"
+
+# Clear all data:
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "TRUNCATE processing_logs, document_chunks, documents RESTART IDENTITY CASCADE;"
+```
 
 ### Qdrant Vector Database
-```bash
+**Configuration:**
+```yaml
 Collection: compliance_docs
-Dimensions: 384 (e5-small-v2 model)
-Distance: Cosine
+Vector Size: 384 dimensions (e5-small-v2 embeddings)
+Distance Metric: Cosine
+Storage: In-memory with persistence
 Internal URL: http://172.17.0.1:6333
+External URL: http://35.209.113.236:6333
+```
 
-# Status check:
+**Payload Structure:**
+```json
+{
+  "doc_id": "document_uuid",
+  "chunk_id": "chunk_uuid", 
+  "text": "chunk text content",
+  "chunk_index": 0,
+  "filename": "document.pdf",
+  "db_document_id": 1,
+  "page_number": 1,
+  "section": "Section 1.2.3"
+}
+```
+
+**Common Operations:**
+```bash
+# Collection status:
 curl -X GET "http://172.17.0.1:6333/collections/compliance_docs"
+
+# Search test:
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/points/search" \
+  -H "Content-Type: application/json" \
+  -d '{"vector": [0.1, 0.2, ...], "limit": 5}'
+
+# Count vectors:
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/points/count" \
+  -H "Content-Type: application/json" \
+  -d '{"filter": {}}'
+
+# Recreate collection:
+curl -X DELETE "http://172.17.0.1:6333/collections/compliance_docs"
+curl -X PUT "http://172.17.0.1:6333/collections/compliance_docs" \
+  -H "Content-Type: application/json" \
+  -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
 ```
 
 ## Tech Stack
 
-### Backend Services
-- **Express.js** - API server with document management
-- **PostgreSQL 15** - Document and chunk metadata storage
-- **Qdrant** - Vector database for semantic search
-- **Apache Tika** - Document text extraction
-- **TEI (e5-small-v2)** - Text embedding generation
-- **vLLM + Llama 3.1-8B-Instruct** - LLM for answer generation
+### Core Technologies
 
-### Frontend
-- **React** - User interface
-- **Tailwind CSS** - Styling
-- **shadcn/ui** - UI components
-- **TypeScript** - Type safety
+#### Backend Services
+- **Express.js 4.x** - RESTful API server with comprehensive document management endpoints
+- **Node.js 18+** - JavaScript runtime
+- **PostgreSQL 15** - Relational database for document metadata and chunk storage
+- **Qdrant 1.x** - High-performance vector database for semantic similarity search
 
-### Orchestration
-- **n8n** - Workflow automation (currently with issues)
-- **Docker** - Service containerization
-- **systemctl** - Service management
+#### AI/ML Services
+- **Apache Tika 2.x** - Multi-format document text extraction with page detection
+- **TEI (Text Embeddings Inference)** - Fast embedding service
+  - Model: `e5-small-v2` (384 dimensions)
+  - Optimized for semantic search
+- **Cross-Encoder Reranking** - Second-stage ranking
+  - Model: `ms-marco-MiniLM-L-6-v2`
+  - Improves retrieval precision
+- **vLLM** - High-throughput LLM inference server
+  - Model: `Llama 3.1-8B-Instruct`
+  - OpenAI-compatible API
+  - Context window: 8192 tokens
+
+#### Frontend
+- **React 18** - Component-based UI framework
+- **TypeScript** - Type-safe development
+- **Tailwind CSS** - Utility-first styling
+- **shadcn/ui** - Accessible component library
+- **Vite** - Fast build tooling
+
+### Supporting Libraries
+
+#### Document Processing
+- **multer** - File upload handling
+- **uuid** - Unique identifier generation
+- **crypto** - SHA-256 hash generation for duplicate detection
+
+#### AI/ML Integration
+- **@xenova/transformers** - JavaScript transformers for cross-encoder reranking
+- **axios** - HTTP client for service communication
+
+#### Database
+- **pg (node-postgres)** - PostgreSQL client
+- **Custom DocumentDatabase class** - Abstraction layer for database operations
+
+### Infrastructure & DevOps
+
+#### Containerization
+- **Docker** - Service containerization (PostgreSQL, Qdrant, TEI)
+- **Docker Compose** - Multi-container orchestration
+
+#### Service Management
+- **systemd** - Linux service management
+- **systemctl** - Service control interface
+- **journalctl** - Service log management
+
+#### Monitoring & Debugging
+- **Comprehensive logging** - Timing metrics, chunk selection profiling
+- **Health check endpoints** - Service availability monitoring
+
+### Development Tools
+- **n8n** - Workflow automation (legacy, being phased out)
+- **curl** - API testing
+- **jq** - JSON processing
 
 ## File Structure
 
-### Backend (`/opt/rag-api/`)
-```
-/opt/rag-api/
-├── server.js          # Express API server with all endpoints
-├── database.js        # DocumentDatabase class for PostgreSQL operations
-├── package.json       # Node.js dependencies
-└── node_modules/      # Dependencies
+### Source Code (`/home/prasadk/codealign/`)
+**Important:** This is where you edit files. Changes must be deployed using:
+```bash
+sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
+sudo systemctl restart rag-api
 ```
 
-### Frontend (`/home/prasadk/codealign/`)
+#### Backend Source (`/home/prasadk/codealign/rag-api/`)
 ```
-/home/prasadk/codealign/
+rag-api/
+├── server.js              # Express API server with all endpoints
+├── database.js            # DocumentDatabase class for PostgreSQL operations  
+├── enhancedChunking.js    # Chunking, reranking, and prompt generation
+├── pageExtractor.js       # Page detection and extraction logic
+├── package.json           # Node.js dependencies
+├── package-lock.json      # Locked dependency versions
+└── uploads/               # Temporary file storage during processing
+```
+
+#### Frontend Source (`/home/prasadk/codealign/`)
+```
 ├── src/
 │   ├── components/
-│   │   ├── document-manager.tsx     # Document CRUD UI
-│   │   └── compliance-checker.tsx   # Query interface
-│   └── pages/Index.tsx
-├── workflows/                       # n8n workflow definitions
-│   ├── upload-document-workflow.json
-│   └── query-compliance-workflow.json
-├── database/migrations/schema.sql   # Database schema
-└── dist/                           # Built React app (served on port 3000)
+│   │   ├── document-manager.tsx      # Document CRUD UI with file upload
+│   │   ├── compliance-checker.tsx    # Query interface with attribution display
+│   │   └── ui/                      # shadcn/ui components
+│   ├── pages/
+│   │   └── Index.tsx                 # Main application page
+│   └── lib/
+│       └── utils.ts                  # Utility functions
+├── public/                           # Static assets
+├── dist/                            # Built React app
+├── package.json                     # Frontend dependencies
+├── tsconfig.json                    # TypeScript configuration
+├── tailwind.config.js               # Tailwind CSS configuration
+├── vite.config.ts                   # Vite build configuration
+└── CLAUDE.md                        # This documentation file
 ```
+
+### Deployed/Runtime Locations
+
+#### Backend Deployment (`/opt/rag-api/`)
+```
+/opt/rag-api/                        # DEPLOYED VERSION - DO NOT EDIT DIRECTLY
+├── server.js                        # Running API server
+├── database.js                      # Database operations
+├── enhancedChunking.js             # Chunking and reranking
+├── pageExtractor.js                # Page extraction
+├── package.json                    
+├── node_modules/                    # Installed dependencies
+└── uploads/                         # Document upload directory
+```
+
+#### Frontend Deployment
+```
+/home/prasadk/codealign/dist/        # Built React app served on port 3000
+```
+
+#### Service Configuration
+```
+/etc/systemd/system/rag-api.service  # systemd service definition
+```
+
+#### Database Files
+```
+Docker volumes:
+- PostgreSQL data: /var/lib/docker/volumes/postgres-rag-data
+- Qdrant data: /var/lib/docker/volumes/qdrant-storage
+```
+
+### Legacy/Archived
+```
+/home/prasadk/codealign/workflows/   # n8n workflow definitions (not actively used)
+├── upload-document-workflow.json
+└── query-compliance-workflow.json
+```
+
+### Important Notes
+1. **Always edit source files** in `/home/prasadk/codealign/rag-api/`
+2. **Deploy changes** with: `sudo cp -r ~/codealign/rag-api/* /opt/rag-api/`
+3. **Restart service** after deployment: `sudo systemctl restart rag-api`
+4. **Frontend auto-builds** from source location
+5. **Never edit** files directly in `/opt/rag-api/`
 
 ## Current Implementation Status
 
-### Step 1: Database Integration - COMPLETE ✅
-- PostgreSQL container running with correct schema
-- Express API server with database integration
-- All CRUD endpoints functional
-- Document duplicate detection working
+### Phase 1: Core Infrastructure - COMPLETE ✅
+- PostgreSQL database with full schema
+- Qdrant vector database configured
+- Express.js API server operational
+- React frontend with document manager
+- Docker services running (PostgreSQL, Qdrant, TEI)
+- vLLM inference server on separate VM
 
-### Step 2: Enhanced Upload Processing - COMPLETE
-**Working Components:**
-- File upload and duplicate detection ✅
-- Text extraction via Tika ✅
-- Text chunking ✅
-- TEI embedding generation ✅
+### Phase 2: Document Processing - COMPLETE ✅
+- Multi-format support (PDF, DOCX, TXT)
+- Apache Tika text extraction with page detection
+- Enhanced chunking (1500 chars, 200 overlap)
+- TEI embedding generation (e5-small-v2)
+- Duplicate detection via SHA-256 hashing
+- Metadata extraction (sections, page numbers)
 
-### Step 3: Source Attribution - PENDING ⏳
-- Query workflow needs enhancement for source attribution
-- UI needs update to display source information
+### Phase 3: Advanced Retrieval - COMPLETE ✅
+- Query classification (5 types: definition, specific_section, list, yes_no, general)
+- Vector search with 300 candidate retrieval
+- Cross-encoder reranking (ms-marco-MiniLM-L-6-v2)
+- Hybrid vector-first selection algorithm
+- Dynamic chunk selection (1-15 chunks based on query type)
+- Token budget management
+
+### Phase 4: Answer Generation - COMPLETE ✅
+- vLLM/Llama 3.1-8B integration
+- System prompt configuration for compliance advisor
+- Labeled source context [A][B][C]
+- Citation parsing and mapping to [1][2][3]
+- Source attribution with document references
+- LLM health checks for availability
+
+### Phase 5: Quality Optimizations - COMPLETE ✅
+- Increased retrieval limit for comprehensive coverage
+- Adaptive quality gates in chunk selection
+- Performance profiling and timing metrics
+- Improved prompt engineering for citation compliance
+
+### Known Issues & Future Improvements
+
+#### To Fix:
+- Remove temporary prompt logging from server.js
+- System prompt on vLLM needs stricter citation format enforcement
+
+#### Future Enhancements:
+- Query expansion for semantic gap issues (e.g., "fire" vs "incident")
+- Hybrid keyword + vector search
+- Caching layer for frequently accessed chunks
+- Admin dashboard for system monitoring
+- Batch document upload support
+- Export query results to PDF/Word
+- User authentication and multi-tenancy
 
 ## API Endpoints
 
-### Working Endpoints
-```bash
-# Health check
-GET http://35.209.113.236:3001/api/health
-
-# Document management
-GET http://35.209.113.236:3001/api/documents
-GET http://35.209.113.236:3001/api/documents/:id
-DELETE http://35.209.113.236:3001/api/documents/:id
-DELETE http://35.209.113.236:3001/api/documents
-
-# Query (uses n8n)
-POST http://35.209.113.236:3001/api/query
-Body: {"query": "your question"}
-
-# Direct upload (bypasses n8n)
-POST http://35.209.113.236:3001/api/upload-document-direct
-Form data: file=@/path/to/document.pdf
+### Base URL
+```
+http://35.209.113.236:3001/api
 ```
 
-### n8n Webhooks
+### Health & Status
+
+#### GET `/api/health`
+Health check endpoint for service monitoring
 ```bash
-# Upload workflow (has issues)
+curl -X GET "http://35.209.113.236:3001/api/health"
+```
+**Response:**
+```json
+{
+  "status": "healthy",
+  "services": {
+    "database": "connected",
+    "qdrant": "connected",
+    "tika": "available",
+    "tei": "available",
+    "llm": "available"
+  }
+}
+```
+
+### Document Management
+
+#### GET `/api/documents`
+List all documents with metadata
+```bash
+curl -X GET "http://35.209.113.236:3001/api/documents"
+```
+**Response:**
+```json
+{
+  "success": true,
+  "documents": [
+    {
+      "id": 1,
+      "filename": "NFPA_101.pdf",
+      "file_size": 2048576,
+      "upload_date": "2024-01-15T10:30:00Z",
+      "processing_status": "completed",
+      "total_chunks": 450
+    }
+  ]
+}
+```
+
+#### GET `/api/documents/:id`
+Get specific document details
+```bash
+curl -X GET "http://35.209.113.236:3001/api/documents/1"
+```
+
+#### DELETE `/api/documents/:id`
+Delete a specific document and its chunks
+```bash
+curl -X DELETE "http://35.209.113.236:3001/api/documents/1"
+```
+
+#### DELETE `/api/documents`
+Delete all documents (requires confirmation)
+```bash
+curl -X DELETE "http://35.209.113.236:3001/api/documents" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm": true}'
+```
+
+### Document Upload
+
+#### POST `/api/upload-document-direct`
+Upload and process a document
+```bash
+curl -X POST "http://35.209.113.236:3001/api/upload-document-direct" \
+  -F "file=@/path/to/document.pdf"
+```
+**Supported formats:** PDF, DOCX, TXT  
+**Max file size:** 50MB  
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Document processed successfully",
+  "document": {
+    "id": 1,
+    "filename": "document.pdf",
+    "total_chunks": 45,
+    "processing_time_ms": 12500
+  }
+}
+```
+
+### Query & Retrieval
+
+#### POST `/api/query`
+Query the knowledge base with semantic search and LLM generation
+```bash
+curl -X POST "http://35.209.113.236:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are the fire sprinkler requirements?"}'
+```
+**Request:**
+```json
+{
+  "query": "your question here",
+  "max_chunks": 10,  // optional, default based on query type
+  "include_sources": true  // optional, default true
+}
+```
+**Response:**
+```json
+{
+  "success": true,
+  "query": "What are the fire sprinkler requirements?",
+  "query_type": "general",
+  "answer": "Fire sprinkler requirements include... [1] [2]",
+  "chunks_analyzed": 300,
+  "chunks_used": 8,
+  "sources": [
+    {
+      "reference": "[1]",
+      "document": "NFPA_13.pdf",
+      "page": 45,
+      "section": "4.2.1",
+      "relevance": "95.2%",
+      "excerpt": "Sprinkler systems shall be..."
+    }
+  ],
+  "enhancement_info": {
+    "llm_guided_attribution": true,
+    "natural_language_format": true,
+    "temperature": 0.3
+  },
+  "timing": {
+    "total_ms": 8500,
+    "embedding_ms": 50,
+    "search_ms": 120,
+    "rerank_ms": 450,
+    "llm_ms": 7500
+  }
+}
+```
+
+### Deprecated/Legacy Endpoints
+
+#### n8n Webhooks (Not Recommended)
+```bash
+# Upload workflow (deprecated - use direct upload instead)
 POST http://35.209.113.236:5678/webhook-test/upload-document
 
-# Query workflow (working)
+# Query workflow (deprecated - use /api/query instead)  
 POST http://35.209.113.236:5678/webhook/d9ece4d6-a9da-494b-bb03-caba40eae672
-Body: {"query": "your question"}
 ```
+
+### Error Responses
+
+All endpoints return consistent error formats:
+```json
+{
+  "success": false,
+  "error": "Error message",
+  "details": "Detailed error information",
+  "code": "ERROR_CODE"
+}
+```
+
+**Common error codes:**
+- `DUPLICATE_FILE`: File already exists
+- `PROCESSING_FAILED`: Document processing error
+- `LLM_UNAVAILABLE`: LLM service temporarily unavailable
+- `INVALID_FORMAT`: Unsupported file format
+- `FILE_TOO_LARGE`: File exceeds size limit
 
 ## Service Management Commands
 
-### Database Operations
+### API Server Management
+
+#### Service Control
 ```bash
-# PostgreSQL connection
-docker exec -it postgres-rag psql -U rag_user -d rag_system
-
-# Check documents
-docker exec -it postgres-rag psql -U rag_user -d rag_system -c "SELECT id, filename, processing_status, total_chunks FROM documents;"
-
-# Clear all data
-docker exec -it postgres-rag psql -U rag_user -d rag_system -c "DELETE FROM processing_logs; DELETE FROM document_chunks; DELETE FROM documents;"
-```
-
-### Vector Database Operations
-```bash
-# Qdrant status
-curl -X GET "http://172.17.0.1:6333/collections/compliance_docs"
-
-# Clear vectors
-curl -X DELETE "http://172.17.0.1:6333/collections/compliance_docs"
-curl -X PUT "http://172.17.0.1:6333/collections/compliance_docs" -H "Content-Type: application/json" -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
-
-# Manual vector test
-curl -X PUT "http://172.17.0.1:6333/collections/compliance_docs/points" -H "Content-Type: application/json" -d '{"points": [{"id": "test", "vector": [0.1, 0.2, 0.3], "payload": {"test": "data"}}]}'
-```
-
-### Service Management
-```bash
-# API server
+# Start/Stop/Restart API server
+sudo systemctl start rag-api
+sudo systemctl stop rag-api
 sudo systemctl restart rag-api
+
+# Check service status
 sudo systemctl status rag-api
+
+# Enable/Disable auto-start on boot
+sudo systemctl enable rag-api
+sudo systemctl disable rag-api
+
+# Reload systemd after service file changes
+sudo systemctl daemon-reload
+```
+
+#### Deployment Workflow
+```bash
+# 1. Edit source files
+cd ~/codealign/rag-api/
+vim server.js
+
+# 2. Deploy to production
+sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
+
+# 3. Restart service
+sudo systemctl restart rag-api
+
+# 4. Verify deployment
+sudo systemctl status rag-api
+curl -X GET "http://localhost:3001/api/health"
+```
+
+#### Log Management
+```bash
+# View real-time logs
 sudo journalctl -u rag-api -f
 
-# Container status
-docker ps
-docker logs postgres-rag
+# View last 100 lines
+sudo journalctl -u rag-api -n 100
+
+# View logs since last restart
+sudo journalctl -u rag-api --since "$(systemctl show -p ActiveEnterTimestamp rag-api | cut -d= -f2-)"
+
+# Search logs for errors
+sudo journalctl -u rag-api | grep -i error
+
+# Export logs to file
+sudo journalctl -u rag-api --since "1 hour ago" > ~/rag-api-logs.txt
 ```
 
+### Docker Container Management
 
-
-### Key Test Commands
+#### Container Operations
 ```bash
-# Full pipeline test
-curl -X POST -F "file=@/tmp/test-new.txt" http://localhost:3001/api/upload-document-direct
+# List all containers
+docker ps -a
 
-# Service health checks
-curl -X GET http://localhost:3001/api/health
-curl -X GET http://localhost:3001/api/documents
+# Start/Stop containers
+docker start postgres-rag
+docker stop postgres-rag
 
-# Individual service tests
-curl -X POST -F "file=@/tmp/test.txt" http://35.209.113.236:9998/tika/form -H "Accept: text/plain"
-curl -X POST "http://172.17.0.1:8081/embed" -H "Content-Type: application/json" -d '{"inputs": "test", "truncate": true}'
+# Restart containers
+docker restart postgres-rag
+
+# View container logs
+docker logs postgres-rag --tail 50 -f
+docker logs qdrant --tail 50 -f
+
+# Execute commands in container
+docker exec -it postgres-rag bash
+docker exec -it qdrant bash
+
+# Container resource usage
+docker stats postgres-rag qdrant
 ```
 
-## Working Test Files
-- `/tmp/hello.txt` - Already exists in system (duplicate detection working)
-- `/tmp/test-new.txt` - Create new test content for upload testing
-- `/tmp/ncfd.pdf` - Original PDF document for testing
+### PostgreSQL Database Operations
 
-## Special instructions
-1.
-~codealign/rag-api is the directory for source file for the services.
-Do sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
-and deploy by sudo systemctl restart rag-api
+#### Connection & Access
+```bash
+# Interactive PostgreSQL shell
+docker exec -it postgres-rag psql -U rag_user -d rag_system
 
-2. Don't attempt to kill the shell that you are running in. That will kill you, lose context, and create work for me. 
+# Execute single command
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "SELECT COUNT(*) FROM documents;"
 
-3. When we establish a plan through collaborative discussion, stick to that agreed plan. If you identify issues or want to suggest changes, consult with me explicitly rather than proposing alternative approaches unilaterally. I prefer to maintain course on agreed plans unless we mutually decide to change direction.
+# Execute SQL file
+docker exec -i postgres-rag psql -U rag_user -d rag_system < ~/schema.sql
+```
 
-## When you are bug fixing - calude-code shell is being killed by claude code like below - Please don't do it!! This happened twice.
-> Again failed upload
+#### Data Queries
+```bash
+# Document status overview
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  SELECT processing_status, COUNT(*) as count 
+  FROM documents 
+  GROUP BY processing_status;"
 
-● Let me check what's happening with the upload. First, let me look at the service logs to see the error:
+# Recent documents
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  SELECT id, filename, upload_date, processing_status, total_chunks 
+  FROM documents 
+  ORDER BY upload_date DESC 
+  LIMIT 10;"
 
-● Bash(sudo journalctl -u rag-api -f --lines=20)
-  ⎿  Running in the background (down arrow to manage)
+# Chunk statistics
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  SELECT d.filename, COUNT(c.id) as chunks, 
+    MIN(c.page_number) as first_page, 
+    MAX(c.page_number) as last_page 
+  FROM documents d 
+  JOIN document_chunks c ON d.id = c.document_id 
+  GROUP BY d.id, d.filename;"
 
-● BashOutput(Reading shell output)
-  ⎿  Sep 01 05:14:03 rag-vm systemd[1]: rag-api.service: Deactivated successfully.
-     Sep 01 05:14:03 rag-vm systemd[1]: Stopped RAG API Server.
-     Sep 01 05:14:03 rag-vm systemd[1]: Started RAG API Server.
-     … +21 lines (ctrl+r to expand)
+# Processing errors
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  SELECT d.filename, p.step, p.error_details 
+  FROM processing_logs p 
+  JOIN documents d ON p.document_id = d.id 
+  WHERE p.status = 'failed';"
+```
 
-● I can see the issue! The error shows that /home/prasadk directory doesn't exist on the server. The service is
-  running on the rag-vm server, but I was assuming the same directory structure. Let me check what directories
-  exist and fix this:
+#### Data Maintenance
+```bash
+# Clear all data (CAUTION!)
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  TRUNCATE processing_logs, document_chunks, documents RESTART IDENTITY CASCADE;"
 
-● Kill Bash(Kill shell: bash_1)
-  ⎿  Shell bash_1 killed
+# Delete specific document
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  DELETE FROM documents WHERE id = 1;"
 
-✻ Shenaniganing… (esc to interrupt)
-  ⎿  Tip: Start with small features or bug fixes, tell Claude to propose a plan, and verify its suggested edits
+# Vacuum database (optimize storage)
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "VACUUM ANALYZE;"
 
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ >                                                                                                                │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  ? for shortcuts
-374 | `+await Z.crypto.sha256DigestHex(F),q=await Bu5(Z.crypto,Z.securityCredentials.secretAccessKey,J,Z.region,Y),N=await RY0(Z.crypto,q,D),E=`${fRG} Credential=${Z.securityCredentials.accessKeyId}/${w}, SignedHeaders=${I}, Signature=${kRG.fromArrayBufferToHex(N)}`;return{amzDate:Q.date?void 0:B,authorizationHeader:E,canonicalQuerystring:Z.canonicalQuerystring}}});var uRG=C((Un)=>{var dM=Un&&Un.__classPrivateFieldGet||function(Z,G,W,Y){if(W==="a"&&!Y)throw new TypeError("Private accessor was defined without a getter");if(typeof G==="function"?Z!==G||!Y:!G.has(Z))throw new TypeError("Cannot read private member from an object whose class did not declare it");return W==="m"?Y:W==="a"?Y.call(Z):Y?Y.value:G.get(Z)},bU,j41,bRG,hRG,eN0,v41;Object.defineProperty(Un,"__esModule",{value:!0});Un.DefaultAwsSecurityCredentialsSupplier=void 0;class gRG{constructor(Z){bU.add(this),this.regionUrl=Z.regionUrl,this.securityCredentialsUrl=Z.securityCredentialsUrl,this.imdsV2SessionTokenUrl=Z.imdsV2SessionTokenUrl,this.additionalGaxi | ... truncated 
-375 | To learn more about authentication and Google APIs, visit:
-376 | https://cloud.google.com/docs/authentication/getting-started`,NO_CREDENTIALS_FOUND:`Unable to find credentials in current environment.
-377 | To learn more about authentication and Google APIs, visit:
-378 | https://cloud.google.com/docs/authentication/getting-started`,NO_ADC_FOUND:"Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information.",NO_UNIVERSE_DOMAIN_FOUND:`Unable to detect a Universe Domain in the current environment.
-379 | https://cloud.google.com/compute/docs/metadata/predefined-metadata-keys`};class e41{get isGCE(){return this.checkIsGCE}constructor(Z={}){if(Qy.add(this),this.checkIsGCE=void 0,this.jsonContent=null,this.cachedCredential=null,Ln.set(this,null),this.clientOptions={},this._cachedProjectId=Z.projectId||null,this.cachedCredential=Z.authClient||null,this.keyFilename=Z.keyFilename||Z.keyFile,this.scopes=Z.scopes,this.clientOptions=Z.clientOptions||{},this.jsonContent=Z.credentials||null,this.apiKey=Z.apiKey||this.clientOptions.apiKey||null,this.apiKey&&(this.jsonContent||this.clientOptions.credentials))throw new RangeError(Q7.GoogleAuthExceptionMessages.API_KEY_WITH_CREDENTIALS);if(Z.universeDomain)this.clientOptions.universeDomain=Z.universeDomain}setGapicJWTValues(Z){Z.defaultServicePath=this.defaultServicePath,Z.useJWTAccessWithScope=this.useJWTAccessWithScope,Z.defaultScopes=this.defaultScopes}getProjectId(Z){if(Z)this.getProjectIdAsync().then((G)=>Z(null,G),Z);else return this.getProjectIdAsync()}async getProje | ... truncated 
+# Database backup
+docker exec postgres-rag pg_dump -U rag_user rag_system > ~/rag_backup_$(date +%Y%m%d).sql
 
-SystemError: kill() failed: EPERM: Operation not permitted
- syscall: "kill",
-   errno: 1,
-    code: "EPERM"
+# Database restore
+docker exec -i postgres-rag psql -U rag_user -d rag_system < ~/rag_backup.sql
+```
 
-      at QPG (/$bunfs/root/claude:379:19786)
-      at <anonymous> (/$bunfs/root/claude:379:19658)
-      at forEach (1:11)
-      at <anonymous> (/$bunfs/root/claude:379:19633)
-      at forEach (1:11)
-      at BPG (/$bunfs/root/claude:379:19605)
-      at <anonymous> (/$bunfs/root/claude:379:19532)
-      at Q (/$bunfs/root/claude:379:20015)
-      at emit (node:events:98:22)
+### Qdrant Vector Database Operations
 
-Bun v1.2.19 (Linux x64 baseline)
-prasadk@rag-vm:~/codealign$ Read from remote host 35.209.113.236: Connection reset by peer
-Connection to 35.209.113.236 closed.
-client_loop: send disconnect: Broken pipe
-# End of special instrction 2.
+#### Collection Management
+```bash
+# Check collection status
+curl -X GET "http://172.17.0.1:6333/collections/compliance_docs"
 
-# Here is the shared TODO list of bug fixes and features. As we work and get these done, I will mark them done.
+# Get collection info
+curl -X GET "http://172.17.0.1:6333/collections/compliance_docs/info"
 
-- UI enchancements for Document Manager panel
-    1. Remove the refresh button above the remove all button, not sure what this is for (Done)
-    2. The branding at the top is adhoc - improve it if you can. (Done)
-- Document Search
-    1. Reconsider if using n8n makes sense anymore (Done)
-    2. If it doesn't implement n8n document upload workflow in node and use that instead (Done)
-    3. Fix bug to make sure the search works realiably! (Done)
-    4. Feature - Attribution. When answering a query, the system not only give answer, but also give attribution with document name and page number or section etc., (Done)
-    5. Improve the quality of answer 
-    6. Imrrove the quality of attribution. 
+# Count vectors
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/points/count" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Delete and recreate collection
+curl -X DELETE "http://172.17.0.1:6333/collections/compliance_docs"
+curl -X PUT "http://172.17.0.1:6333/collections/compliance_docs" \
+  -H "Content-Type: application/json" \
+  -d '{"vectors": {"size": 384, "distance": "Cosine"}}'
+```
+
+#### Vector Operations
+```bash
+# Search vectors
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/points/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vector": [0.1, 0.2, ...],  # 384 dimensions
+    "limit": 5,
+    "with_payload": true
+  }'
+
+# Delete specific vectors
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/points/delete" \
+  -H "Content-Type: application/json" \
+  -d '{"points": ["vector-id-1", "vector-id-2"]}'
+
+# Backup collection
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/snapshots"
+```
+
+### Process Monitoring
+
+#### System Resources
+```bash
+# CPU and memory usage
+htop
+
+# Disk usage
+df -h
+
+# Port usage
+sudo netstat -tulpn | grep -E '3000|3001|5433|6333|8000|8081|9998'
+
+# Process monitoring
+ps aux | grep -E 'node|docker|postgres|qdrant'
+```
+
+#### Service Health Checks
+```bash
+# Check all services
+for port in 3001 5433 6333 8081 9998; do
+  echo "Checking port $port..."
+  nc -zv localhost $port
+done
+
+# Test LLM service
+curl -X GET "http://35.209.219.117:8000/health"
+
+# Test full pipeline
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test query"}'
+```
+
+### Troubleshooting
+
+#### Common Issues
+```bash
+# Port already in use
+sudo lsof -i :3001
+sudo kill -9 [PID]
+
+# Clear Docker issues
+docker system prune -a --volumes
+
+# Reset database connection
+docker restart postgres-rag
+sudo systemctl restart rag-api
+
+# Check disk space
+df -h /var/lib/docker
+
+# View systemd service file
+cat /etc/systemd/system/rag-api.service
+```
 
 
-  # We are working on item #5 of UI enhancements. The following is the summary of its design and implementation.
 
- RAG Quality Improvement: Design & Implementation Plan
+## Key Test Commands
 
-  Executive Summary
+### Quick System Validation
 
-  Enhance the RAG system's answer quality by implementing four key improvements: LangChain-based intelligent
-  chunking, cross-encoder reranking, dynamic chunk selection, and enhanced prompt engineering. These changes
-  will improve answer accuracy from ~70% to ~90%+ while maintaining <10 second response times.
+#### Full Pipeline Test
+```bash
+# 1. Create test file
+echo "This is a test document about fire safety regulations." > /tmp/test-doc.txt
 
-  Current System Issues
+# 2. Upload document
+curl -X POST -F "file=@/tmp/test-doc.txt" \
+  http://localhost:3001/api/upload-document-direct
 
-  - Fixed chunking breaks mid-sentence, losing context
-  - No reranking means less relevant chunks reach LLM
-  - Static 5 chunks wastes tokens on simple queries, insufficient for complex ones
-  - Basic prompt doesn't enforce compliance-specific requirements
+# 3. Query the document
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What does the document say about fire safety?"}'
 
-  Proposed Architecture
+# 4. Check attribution
+# Response should include answer with [1] citations and source references
+```
 
-  Query → Query Analysis → Vector Search (20 results) → Cross-Encoder Rerank →
-  Dynamic Selection (1-5 chunks) → Enhanced Prompt → LLM → Validated Answer
+#### Service Health Matrix
+```bash
+# Check all services in one command
+echo "=== Service Health Check ===" && \
+echo "API Server:" && curl -s http://localhost:3001/api/health | jq '.status' && \
+echo "PostgreSQL:" && docker exec postgres-rag pg_isready && \
+echo "Qdrant:" && curl -s http://172.17.0.1:6333/collections/compliance_docs | jq '.status' && \
+echo "Tika:" && curl -s http://localhost:9998/tika | grep -q "Apache Tika" && echo "OK" && \
+echo "TEI:" && curl -s http://172.17.0.1:8081/health | jq '.status' && \
+echo "LLM:" && curl -s http://35.209.219.117:8000/health | jq '.'
+```
 
-  Implementation Components
+### Component Testing
 
-  1. Enhanced Chunking with LangChain
+#### Document Upload Tests
+```bash
+# Test duplicate detection
+curl -X POST -F "file=@/tmp/test-doc.txt" \
+  http://localhost:3001/api/upload-document-direct
+# Should return duplicate error
 
-  Goal: Create semantic, complete chunks that preserve document structure
+# Test PDF upload
+curl -X POST -F "file=@/path/to/document.pdf" \
+  http://localhost:3001/api/upload-document-direct
 
-  // Install: npm install langchain @langchain/textsplitters
+# Test DOCX upload
+curl -X POST -F "file=@/path/to/document.docx" \
+  http://localhost:3001/api/upload-document-direct
 
-  const { RecursiveCharacterTextSplitter } = require('@langchain/textsplitters');
+# Test invalid format
+echo "test" > /tmp/test.xyz
+curl -X POST -F "file=@/tmp/test.xyz" \
+  http://localhost:3001/api/upload-document-direct
+# Should return format error
+```
 
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 1500,
-    chunkOverlap: 200,
-    separators: [
-      "\n## ",     // Section headers
-      "\n### ",    // Subsections  
-      "\n\n",      // Paragraphs
-      "\n",        // Lines
-      ". ",        // Sentences
-      " "          // Words
+#### Query Testing
+```bash
+# Test different query types
+
+# Definition query
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is a fire sprinkler?"}'
+
+# Specific section query  
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Section 4.2.1 requirements"}'
+
+# List query
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "List all occupancy classifications"}'
+
+# Yes/No query
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Are sprinklers required in restaurants?"}'
+
+# Complex general query
+curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Explain the fire safety requirements for a 3-story office building with assembly areas"}'
+```
+
+#### Individual Service Tests
+```bash
+# Apache Tika - Text extraction
+curl -X POST -F "file=@/tmp/test.pdf" \
+  http://localhost:9998/tika/form \
+  -H "Accept: text/plain"
+
+# TEI - Embedding generation
+curl -X POST "http://172.17.0.1:8081/embed" \
+  -H "Content-Type: application/json" \
+  -d '{"inputs": "Fire safety regulations", "truncate": true}'
+
+# Qdrant - Vector search
+curl -X POST "http://172.17.0.1:6333/collections/compliance_docs/points/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vector": [0.1, 0.2, 0.3, ...],  # 384 dimensions
+    "limit": 5,
+    "with_payload": true
+  }'
+
+# vLLM - Direct LLM query
+curl -X POST "http://35.209.219.117:8000/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.1-8b-instruct",
+    "messages": [
+      {"role": "user", "content": "Test message"}
     ],
-    keepSeparator: true,
-    lengthFunction: (text) => text.length,
-  });
+    "max_tokens": 50
+  }'
+```
 
-  // Enhanced with metadata extraction
-  function enhancedChunk(text, filename) {
-    const chunks = await splitter.splitText(text);
+### Performance Testing
 
-    return chunks.map((chunk, index) => ({
-      text: chunk,
-      metadata: {
-        section: extractSection(chunk),  // "Section Q104.1"
-        doc_type: filename.includes('fire') ? 'fire_code' : 'building_code',
-        has_requirements: /\b(shall|must|required)\b/i.test(chunk),
-        chunk_index: index
-      }
-    }));
-  }
+#### Response Time Measurement
+```bash
+# Measure query response time
+time curl -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are fire sprinkler requirements?"}'
 
-  2. Cross-Encoder Reranking
+# Measure with detailed timing
+curl -w "\n\nTime Details:\n  DNS: %{time_namelookup}s\n  Connect: %{time_connect}s\n  Start Transfer: %{time_starttransfer}s\n  Total: %{time_total}s\n" \
+  -X POST "http://localhost:3001/api/query" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What are fire sprinkler requirements?"}'
+```
 
-  Goal: Improve retrieval precision from 70% to 90%+
+#### Load Testing
+```bash
+# Simple concurrent request test
+for i in {1..10}; do
+  curl -X POST "http://localhost:3001/api/query" \
+    -H "Content-Type: application/json" \
+    -d '{"query": "Test query '$i'"}' &
+done
+wait
 
-  // Install: npm install @xenova/transformers
+# Monitor system during load
+htop  # In another terminal
+docker stats  # In another terminal
+```
 
-  const { pipeline } = require('@xenova/transformers');
+### Debugging Commands
 
-  // Initialize reranker
-  const reranker = await pipeline(
-    'reranking',
-    'Xenova/ms-marco-MiniLM-L-6-v2'
-  );
+#### Check Recent Logs
+```bash
+# API server logs with timing
+sudo journalctl -u rag-api --since "5 minutes ago" | grep -E "TIMING|ERROR|WARN"
 
-  async function rerankChunks(query, chunks) {
-    // Score each chunk against query
-    const scores = await Promise.all(
-      chunks.map(async (chunk) => {
-        const result = await reranker(query, chunk.text);
-        return { ...chunk, rerank_score: result.score };
-      })
-    );
+# Check for citation issues
+sudo journalctl -u rag-api --since "10 minutes ago" | grep -E "CITATION|sources"
 
-    // Sort by rerank score
-    return scores
-      .sort((a, b) => b.rerank_score - a.rerank_score)
-      .slice(0, 5);
-  }
+# Check chunk selection
+sudo journalctl -u rag-api --since "10 minutes ago" | grep "CHUNK_SELECTION"
+```
 
-  3. Dynamic Chunk Selection
+#### Database Verification
+```bash
+# Verify document processing
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  SELECT d.filename, d.processing_status, d.total_chunks,
+    (SELECT COUNT(*) FROM document_chunks WHERE document_id = d.id) as actual_chunks
+  FROM documents d
+  ORDER BY d.upload_date DESC LIMIT 5;"
 
-  Goal: Optimize chunks per query type (1-5 based on need)
+# Check for orphaned chunks
+docker exec -it postgres-rag psql -U rag_user -d rag_system -c "
+  SELECT COUNT(*) as orphaned_chunks
+  FROM document_chunks c
+  LEFT JOIN documents d ON c.document_id = d.id
+  WHERE d.id IS NULL;"
+```
 
-  function selectOptimalChunks(query, rerankedChunks) {
-    // Classify query
-    const queryType = classifyQuery(query);
+### Test Data
 
-    // Calculate confidence distribution
-    const scores = rerankedChunks.map(c => c.rerank_score);
-    const topScore = scores[0];
-    const dropoff = scores[0] - scores[4];
+#### Sample Test Files
+```bash
+# Create small test file
+echo "Fire sprinklers must be installed in all commercial buildings over 5000 square feet." > /tmp/test-fire.txt
 
-    // Determine optimal count
-    let numChunks = 3; // default
+# Create multi-line test file
+cat > /tmp/test-building.txt << EOF
+Building Code Requirements:
+1. All exits must be clearly marked
+2. Fire alarms required on every floor
+3. Sprinkler systems mandatory for buildings over 3 stories
+4. Emergency lighting must operate for minimum 90 minutes
+EOF
 
-    // High confidence single answer
-    if (queryType === 'definition' && topScore > 0.95) {
-      numChunks = 1;
-    }
-    // Specific section reference
-    else if (queryType === 'specific_section' && topScore > 0.9) {
-      numChunks = 2;
-    }
-    // Comprehensive list query
-    else if (queryType === 'list' || queryType === 'comprehensive') {
-      numChunks = 5;
-    }
-    // Score distribution analysis
-    else if (dropoff > 0.3) {
-      numChunks = 2; // Sharp dropoff = only top chunks relevant
-    }
-    else if (dropoff < 0.1) {
-      numChunks = 4; // Flat distribution = need more context
-    }
+# Test files available in system
+ls -la /tmp/*.txt /tmp/*.pdf 2>/dev/null
+```
 
-    return rerankedChunks.slice(0, numChunks);
-  }
+## Special Instructions
 
-  function classifyQuery(query) {
-    if (/^(what is|define)/i.test(query)) return 'definition';
-    if (/^(section|appendix)\s+[A-Z0-9]/i.test(query)) return 'specific_section';
-    if (/\b(list|all|enumerate)\b/i.test(query)) return 'list';
-    if (/^(is|are|does|must)\b/i.test(query)) return 'yes_no';
-    return 'general';
-  }
+### Deployment Reminder
+```bash
+# ALWAYS deploy changes using this workflow:
+# 1. Edit source files
+cd ~/codealign/rag-api/
 
-  4. Enhanced Prompt Engineering
+# 2. Deploy to production
+sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
 
-  Goal: Enforce compliance-specific answer requirements
+# 3. Restart service
+sudo systemctl restart rag-api
 
-  function buildEnhancedPrompt(query, chunks, queryType) {
-    const basePrompt = `You are a compliance document expert. Answer based ONLY on the provided context.
+# 4. Verify deployment
+sudo systemctl status rag-api
+```
 
-  CRITICAL INSTRUCTIONS:
-  1. If the answer is not in the context, respond: "This information is not available in the provided 
-  documents."
-  2. When citing requirements, quote the exact section number (e.g., "According to Section Q104.1...")
-  3. Distinguish between mandatory ("shall", "must") and recommended ("should", "may") requirements
-  4. Include ALL relevant exceptions or conditions (e.g., "except when", "unless")
-  5. For yes/no questions, start with a clear "Yes" or "No" followed by explanation`;
+## Important Notes
+1. **Source directory**: `~/codealign/rag-api/` (edit here)
+2. **Deploy directory**: `/opt/rag-api/` (DO NOT edit directly)
+3. **Don't kill active shell**: Avoid `kill -9` on current process
+4. **Stick to agreed plans**: Consult before changing approach
 
-    const contextSection = `\nCONTEXT FROM COMPLIANCE DOCUMENTS:\n${
-      chunks.map((c, i) => 
-        `[Source ${i+1}: ${c.metadata.document}, Section ${c.metadata.section}]\n${c.text}\n`
-      ).join('\n')
-    }`;
-
-    const querySection = `\nQUESTION: ${query}`;
-
-    const formatInstructions = {
-      'definition': '\nProvide a clear, concise definition with the relevant section reference.',
-      'yes_no': '\nAnswer with "Yes" or "No" first, then provide supporting details.',
-      'list': '\nProvide a numbered list of all relevant items found in the context.',
-      'specific_section': '\nQuote the exact text from the specified section.',
-      'general': '\nProvide a comprehensive answer with all relevant details.'
-    };
-
-    return basePrompt + contextSection + querySection + (formatInstructions[queryType] ||
-  formatInstructions.general);
-  }
-
-  Complete Query Pipeline
-
-  async function improvedQueryPipeline(query) {
-    // Step 1: Query Analysis
-    const queryType = classifyQuery(query);
-    const expandedQuery = expandQueryTerms(query);
-
-    // Step 2: Broad Retrieval (Vector Search)
-    const searchResults = await qdrant.search({
-      vector: await getEmbedding(expandedQuery),
-      limit: 20,
-      scoreThreshold: 0.5
-    });
-
-    // Step 3: Reranking
-    const rerankedChunks = await rerankChunks(query, searchResults);
-
-    // Step 4: Dynamic Selection
-    const selectedChunks = selectOptimalChunks(query, rerankedChunks);
-
-    // Step 5: Enhanced Prompt
-    const prompt = buildEnhancedPrompt(query, selectedChunks, queryType);
-
-    // Step 6: LLM Generation
-    const answer = await llm.generate({
-      prompt: prompt,
-      max_tokens: 500,
-      temperature: 0.1
-    });
-
-    // Step 7: Enhanced Attribution
-    const response = {
-      answer: answer,
-      sources: selectedChunks.map(c => ({
-        document: c.metadata.document,
-        section: c.metadata.section,
-        relevance: `${(c.rerank_score * 100).toFixed(1)}%`,
-        excerpt: c.text.substring(0, 200)
-      })),
-      query_type: queryType,
-      chunks_used: selectedChunks.length
-    };
-
-    return response;
-  }
-
-  Implementation Timeline
-
-  Phase 1: Foundation (Day 1)
-
-  - Install dependencies (LangChain, transformers)
-  - Implement enhanced chunking
-  - Re-process existing documents
-
-  Phase 2: Retrieval (Day 2)
-
-  - Setup cross-encoder reranking
-  - Implement dynamic chunk selection
-  - Add query classification
-
-  Phase 3: Generation (Day 3)
-
-  - Implement enhanced prompts
-  - Add answer validation
-  - Update attribution format
-
-  Phase 4: Testing & Optimization (Day 4)
-
-  - Test with sample queries
-  - Measure performance improvements
-  - Fine-tune thresholds
-
-  Expected Performance Improvements
-
-  | Metric              | Current           | Expected          | Improvement      |
-  |---------------------|-------------------|-------------------|------------------|
-  | Answer Accuracy     | ~70%              | ~90%              | +20%             |
-  | Response Time       | 8-10s             | 8-11s             | +1s (acceptable) |
-  | Attribution Quality | Fragment excerpts | Complete sections | Significant      |
-  | Token Usage         | Fixed 2000        | Dynamic 500-2500  | Optimized        |
-  | Hallucination Rate  | ~15%              | <5%               | -10%             |
-
-  Success Metrics
-
-  - Definition queries: 95%+ accuracy with single chunk
-  - Section lookups: Exact match 100% of the time
-  - List queries: Complete enumeration from documents
-  - Complex queries: Comprehensive answers with proper attribution
-
-  

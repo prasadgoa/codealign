@@ -462,12 +462,29 @@ app.post('/api/query', async (req, res) => {
       });
     }
 
+    // STEP 0: Quick LLM health check (5-10ms)
+    try {
+      await axios.get('http://35.209.219.117:8000/health', { 
+        timeout: 5000 
+      });
+    } catch (error) {
+      return res.status(503).json({
+        success: false,
+        error: "LLM service temporarily unavailable",
+        details: "Please try again in a few minutes"
+      });
+    }
+
     console.log('=== QUERY START DEBUG ===');
     console.log('Query:', query);
     console.log('========================');
+    
+    const startTime = Date.now();
+    let stepTime = startTime;
 
     // Step 1: Generate embedding for the query
     console.log('Generating query embedding...');
+    const embeddingStart = Date.now();
     const embeddingResponse = await axios.post(
       'http://172.17.0.1:8081/embed',
       {
@@ -481,10 +498,14 @@ app.post('/api/query', async (req, res) => {
     );
 
     const queryEmbedding = embeddingResponse.data[0];
-    console.log('Query embedding generated, dimension:', queryEmbedding.length);
+    const embeddingTime = Date.now() - embeddingStart;
+    console.log(`Query embedding generated, dimension: ${queryEmbedding.length} (${embeddingTime}ms)`);
 
     // Step 2: Determine retrieval limit based on query type
+    const classifyStart = Date.now();
     const queryType = queryClassifier.classifyQuery(query);
+    const classifyTime = Date.now() - classifyStart;
+    console.log(`Query classified as: ${queryType} (${classifyTime}ms)`);
     const retrievalLimits = {
       'definition': 25,
       'specific_section': 30, 
@@ -492,12 +513,13 @@ app.post('/api/query', async (req, res) => {
       'list': 50,
       'procedure': 40,
       'analysis': 60,
-      'general': 40
+      'general': 300  // INCREASED: Cast wider net to capture all relevant content
     };
     const retrievalLimit = retrievalLimits[queryType] || retrievalLimits.general;
     
     // Step 3: Search Qdrant for similar vectors (adaptive limit for reranking)
     console.log(`Searching Qdrant for similar chunks (${queryType} query, limit: ${retrievalLimit})...`);
+    const qdrantStart = Date.now();
     const qdrantSearchResponse = await axios.post(
       'http://172.17.0.1:6333/collections/compliance_docs/points/search',
       {
@@ -513,7 +535,8 @@ app.post('/api/query', async (req, res) => {
     );
 
     const searchResults = qdrantSearchResponse.data.result || [];
-    console.log(`Found ${searchResults.length} relevant chunks`);
+    const qdrantTime = Date.now() - qdrantStart;
+    console.log(`Found ${searchResults.length} relevant chunks (${qdrantTime}ms)`);
 
     if (searchResults.length === 0) {
       return res.json({
@@ -527,8 +550,11 @@ app.post('/api/query', async (req, res) => {
     }
 
     // Step 4: Get chunk details from database
+    const dbStart = Date.now();
     const chunkIds = searchResults.map(result => result.id);
     const chunkDetails = await DocumentDatabase.getChunksByVectorIds(chunkIds);
+    const dbTime = Date.now() - dbStart;
+    console.log(`Retrieved ${chunkDetails.length} chunk details from database (${dbTime}ms)`);
     
     // Step 5: Prepare documents for reranking
     const documentsForReranking = searchResults.map((result, index) => {
@@ -549,10 +575,12 @@ app.post('/api/query', async (req, res) => {
     
     // Step 6: Apply vector-first token-based adaptive chunk selection (with lazy reranking)
     console.log('Applying vector-first adaptive selection with lazy reranking...');
+    const selectionStart = Date.now();
     const selectionResult = queryClassifier.selectOptimalChunks(query, documentsForReranking);
     const selectedChunks = selectionResult.chunks;
+    const selectionTime = Date.now() - selectionStart;
     
-    console.log(`Query type: ${queryType}, Selected ${selectedChunks.length} chunks`);
+    console.log(`Query type: ${queryType}, Selected ${selectedChunks.length} chunks (${selectionTime}ms)`);
     
     // Step 8: Prepare context for LLM
     const context = selectedChunks.map((chunk, index) => ({
@@ -574,26 +602,31 @@ app.post('/api/query', async (req, res) => {
 
     // Step 9: Generate enhanced prompt
     console.log('Generating enhanced prompt...');
+    const promptStart = Date.now();
     const llmPrompt = promptEnhancer.buildEnhancedPrompt(query, selectedChunks, queryType);
+    const promptTime = Date.now() - promptStart;
 
     console.log('=== ENHANCED PROMPT DEBUG ===');
-    console.log('Prompt length:', llmPrompt.length);
+    console.log(`Prompt length: ${llmPrompt.length} (${promptTime}ms)`);
     console.log('Query type used:', queryType);
     console.log('Prompt preview:', llmPrompt.substring(0, 400));
     console.log('=============================');
 
     let generatedAnswer;
     let llmGuidedSources = [];
+    let llmTime = 0;
+    let parseTime = 0;
     try {
+      console.log('Calling LLM for answer generation...');
+    console.log('=== FULL PROMPT SENT TO VLLM ===');
+    console.log(llmPrompt);
+    console.log('=== END PROMPT ===');
+      const llmStart = Date.now();
       const llmResponse = await axios.post(
         'http://35.209.219.117:8000/v1/chat/completions',
         {
           model: 'llama-3.1-8b-instruct',
           messages: [
-            {
-              role: 'system',
-              content: 'You are a helpful assistant that provides clear, direct answers based on compliance documents. Be concise and focus on answering the question directly.'
-            },
             {
               role: 'user',
               content: llmPrompt
@@ -609,9 +642,13 @@ app.post('/api/query', async (req, res) => {
       );
       
       const rawLLMResponse = llmResponse.data.choices[0].message.content.trim();
+      const llmTime = Date.now() - llmStart;
+      console.log(`LLM response generated (${llmTime}ms)`);
       
       // Step 10: Parse LLM response to extract answer and sources used
+      const parseStart = Date.now();
       const parsedResponse = promptEnhancer.parseLLMResponse(rawLLMResponse);
+      const parseTime = Date.now() - parseStart;
       
       console.log('=== CITATION EXTRACTION DEBUG ===');
       console.log('Parsing method:', parsedResponse.method);
@@ -688,10 +725,33 @@ app.post('/api/query', async (req, res) => {
       status: 'success'
     };
 
+    const totalTime = Date.now() - startTime;
+    
     console.log('=== QUERY COMPLETE ===');
     console.log(`Answer length: ${generatedAnswer.length} chars`);
     console.log(`Sources: ${context.length}`);
     console.log('====================');
+    
+    // Comprehensive timing breakdown
+    console.log('TIMING_BREAKDOWN:', JSON.stringify({
+      total_time_ms: totalTime,
+      embedding_time_ms: embeddingTime,
+      classification_time_ms: classifyTime,
+      qdrant_search_time_ms: qdrantTime,
+      db_retrieval_time_ms: dbTime,
+      chunk_selection_time_ms: selectionTime,
+      prompt_generation_time_ms: promptTime,
+      llm_response_time_ms: llmTime,
+      response_parsing_time_ms: parseTime,
+      embedding_pct: ((embeddingTime / totalTime) * 100).toFixed(1),
+      qdrant_pct: ((qdrantTime / totalTime) * 100).toFixed(1),
+      db_retrieval_pct: ((dbTime / totalTime) * 100).toFixed(1),
+      chunk_selection_pct: ((selectionTime / totalTime) * 100).toFixed(1),
+      llm_response_pct: ((llmTime / totalTime) * 100).toFixed(1),
+      query_type: queryType,
+      chunks_retrieved: searchResults.length,
+      chunks_selected: context.length
+    }));
 
     res.json(response);
 
