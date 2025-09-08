@@ -942,9 +942,9 @@ This system uses **exactly 5 core colors** for optimal visual hierarchy, profess
 - **Rule**: Provides visual interest while maintaining clear hierarchy from primary
 
 **3. SUCCESS/STATUS Color** ✅
-- **Purpose**: Positive feedback and active states
-- **Elements**: Success messages, active status badges, confirmations, positive indicators
-- **Rule**: ALL positive status elements must share this color for consistency
+- **Purpose**: Positive feedback and success states only
+- **Elements**: Success messages, confirmations, positive indicators (NOT active badges)
+- **Rule**: Used only for explicit success feedback, not status indicators
 
 **4. NEUTRAL Base Color** ⚪
 - **Purpose**: Clean, professional foundation
@@ -959,8 +959,8 @@ This system uses **exactly 5 core colors** for optimal visual hierarchy, profess
 #### **Color Sharing Rules:**
 
 **✅ MUST Share Color (Collapse):**
-- Logo + Primary Buttons + Active Nav = **PRIMARY COLOR**
-- All Success States + Active Badges = **SUCCESS COLOR**  
+- Logo + Primary Buttons + Active Nav + Active Badges = **PRIMARY COLOR**
+- Success Messages + Confirmations = **SUCCESS COLOR**  
 - All Backgrounds + Clean Spaces = **NEUTRAL BASE**
 - All Text + All Borders = **NEUTRAL SYSTEM** (opacity variations)
 
@@ -1089,9 +1089,9 @@ footer: {
 2. **Show each option as:**
    ```
    ## Option 1: [Industry Name] Theme
-   - PRIMARY: [Color] - Logo, primary buttons, active nav
+   - PRIMARY: [Color] - Logo, primary buttons, active nav, active badges
    - SECONDARY: [Color] - Logo accents, secondary actions  
-   - SUCCESS: [Color] - Active badges, success states
+   - SUCCESS: [Color] - Success messages, confirmations only
    - NEUTRAL BASE: [Color] - All backgrounds
    - NEUTRAL SYSTEM: [Gray family] - Text and borders
    

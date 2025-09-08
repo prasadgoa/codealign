@@ -83,9 +83,9 @@ export const fireTheme: ColorConfig = {
   
   statusBadges: {
     active: {
-      background: "hsl(142, 75%, 35%)",  // Current CSS variable primary
+      background: "rgb(153, 27, 27)",    // PRIMARY burgundy - matches logo
       text: "rgb(255, 255, 255)",        // white
-      hover: "hsl(142, 75%, 30%)",       // Slightly darker
+      hover: "rgb(127, 29, 29)",         // Darker burgundy for hover
     },
     archived: {
       background: "hsl(214, 40%, 94%)",  // Current CSS variable secondary
