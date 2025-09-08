@@ -56,6 +56,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/documents/:id/download', async (req, res) => {
   try {
     const documentId = parseInt(req.params.id);
+    const action = req.query.action || 'view'; // Default to view if not specified
     const document = await DocumentDatabase.getDocumentById(documentId);
     
     if (!document) {
@@ -72,8 +73,14 @@ app.get('/api/documents/:id/download', async (req, res) => {
       });
     }
 
-    // Set appropriate headers
-    res.setHeader('Content-Disposition', `inline; filename="${document.original_filename}"`);
+    // Set appropriate headers based on action
+    if (action === 'download') {
+      // Force download with attachment disposition
+      res.setHeader('Content-Disposition', `attachment; filename="${document.original_filename}"`);
+    } else {
+      // Allow browser to display inline (view mode)
+      res.setHeader('Content-Disposition', `inline; filename="${document.original_filename}"`);
+    }
     res.setHeader('Content-Type', document.mime_type || 'application/octet-stream');
     
     // Stream the file

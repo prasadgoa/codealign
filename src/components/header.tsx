@@ -1,4 +1,5 @@
 import { Shield, Flame, BarChart, BookOpen, FileText } from 'lucide-react';
+import { getBrandingConfig } from '@/config/branding';
 
 interface HeaderProps {
   activeSection: string;
@@ -6,6 +7,8 @@ interface HeaderProps {
 }
 
 export function Header({ activeSection, onSectionChange }: HeaderProps) {
+  const branding = getBrandingConfig();
+  
   return (
     <header className="bg-white border-b border-gray-200 shadow-sm">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -22,10 +25,10 @@ export function Header({ activeSection, onSectionChange }: HeaderProps) {
             </div>
             <div>
               <div className="flex items-baseline space-x-1">
-                <h1 className="text-xl font-semibold text-gray-900">Marshal</h1>
-                <span className="text-xs text-red-600 font-medium">by GoAlign</span>
+                <h1 className="text-xl font-semibold text-gray-900">{branding.appName}</h1>
+                <span className="text-xs text-red-600 font-medium">by {branding.companyName}</span>
               </div>
-              <p className="text-sm text-gray-600">Compliance Command Center</p>
+              <p className="text-sm text-gray-600">{branding.tagline}</p>
             </div>
           </div>
 
@@ -50,7 +53,7 @@ export function Header({ activeSection, onSectionChange }: HeaderProps) {
               }`}
             >
               <BookOpen className="h-4 w-4" />
-              <span>Knowledge Base</span>
+              <span>{branding.knowledgeBaseName}</span>
             </button>
             <button
               onClick={() => onSectionChange('reports')}

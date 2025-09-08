@@ -3,18 +3,20 @@ import { ComplianceChecker } from '@/components/compliance-checker';
 import { DocumentManager } from '@/components/document-manager';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { MessageCircle, FolderOpen } from 'lucide-react';
+import { getBrandingConfig } from '@/config/branding';
 
 export function KnowledgeBase() {
   const [activeTab, setActiveTab] = useState('checker');
+  const branding = getBrandingConfig();
 
   return (
     <div className="space-y-6">
       <div className="mb-8">
         <h2 className="text-3xl font-bold text-foreground mb-2">
-          Knowledge Base
+          {branding.appName} - {branding.knowledgeBaseName}
         </h2>
         <p className="text-lg text-muted-foreground">
-          Chat with our AI assistant about fire safety, building codes, and compliance requirements. Upload your documents and get instant expert guidance.
+          Chat with our AI assistant about {branding.primaryDomain}, building codes, and compliance requirements. Upload your documents and get instant expert guidance.
         </p>
       </div>
 
@@ -25,14 +27,14 @@ export function KnowledgeBase() {
             className="flex items-center space-x-2 data-[state=active]:bg-gradient-primary data-[state=active]:text-primary-foreground"
           >
             <MessageCircle className="h-4 w-4" />
-            <span>AI Assistant</span>
+            <span>{branding.assistantName}</span>
           </TabsTrigger>
           <TabsTrigger 
             value="documents"
             className="flex items-center space-x-2 data-[state=active]:bg-gradient-primary data-[state=active]:text-primary-foreground"
           >
             <FolderOpen className="h-4 w-4" />
-            <span>Document Library</span>
+            <span>{branding.documentLibraryName}</span>
           </TabsTrigger>
         </TabsList>
 

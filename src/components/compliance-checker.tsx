@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { CheckCircle, XCircle, AlertTriangle, Loader2, FileText, ExternalLink } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import ReactMarkdown from 'react-markdown';
+import { getBrandingConfig } from '@/config/branding';
 
 interface ComplianceSource {
   reference?: string;
@@ -40,6 +41,7 @@ export function ComplianceChecker() {
   const [isChecking, setIsChecking] = useState(false);
   const [result, setResult] = useState<ComplianceResult | null>(null);
   const { toast } = useToast();
+  const branding = getBrandingConfig();
 
   const viewDocument = (source: ComplianceSource) => {
     if (!source.document_id) {
@@ -52,8 +54,8 @@ export function ComplianceChecker() {
     }
 
     // Open document in new tab/window (same as Document Library)
-    const downloadUrl = `http://35.209.113.236:3001/api/documents/${source.document_id}/download`;
-    window.open(downloadUrl, '_blank');
+    const viewUrl = `http://35.209.113.236:3001/api/documents/${source.document_id}/download?action=view`;
+    window.open(viewUrl, '_blank');
     
     toast({
       title: "Opening Document",
@@ -126,15 +128,15 @@ export function ComplianceChecker() {
       <Card className="shadow-soft border-border/50">
         <CardHeader>
           <CardTitle className="text-xl font-semibold text-foreground">
-            Ask Your Compliance Assistant
+            Ask {branding.assistantName}
           </CardTitle>
           <CardDescription>
-            Ask me anything about fire safety codes, building regulations, zoning requirements, or compliance questions. I'll search through your documents and provide expert guidance.
+            {branding.promptDescription}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea
-            placeholder="Ask me a question... (e.g., 'What are fire safety requirements for ADUs?')"
+            placeholder={`Ask me a question... (e.g., 'What are ${branding.primaryDomain} requirements for ADUs?')`}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             className="h-[60px] resize-none border-border/50 focus:border-primary transition-all overflow-y-auto"
@@ -155,7 +157,7 @@ export function ComplianceChecker() {
                   Thinking...
                 </>
               ) : (
-                'Ask Assistant'
+                branding.askAssistantText
               )}
             </Button>
           </div>
@@ -167,7 +169,7 @@ export function ComplianceChecker() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <CheckCircle className="h-6 w-6 text-accent" />
-              Assistant Response
+{branding.assistantName} Response
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">

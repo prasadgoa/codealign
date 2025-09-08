@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Upload, FileText, Trash2, Eye, Plus, RefreshCw, Clock, CheckCircle, XCircle, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Progress } from '@/components/ui/progress';
@@ -47,9 +47,8 @@ export function DocumentManager() {
   const [documents, setDocuments] = useState<CodeDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set());
-  const [showRemoveAllDialog, setShowRemoveAllDialog] = useState(false);
   const [deletingDocument, setDeletingDocument] = useState<number | null>(null);
-  const [deletingAll, setDeletingAll] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{ show: boolean; doc: CodeDocument | null }>({ show: false, doc: null });
   const { toast } = useToast();
 
   // Load documents from database
@@ -273,8 +272,18 @@ export function DocumentManager() {
     event.target.value = '';
   };
 
-  const removeDocument = async (documentId: number, filename: string) => {
+  const handleDeleteClick = (doc: CodeDocument) => {
+    setDeleteConfirmation({ show: true, doc });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmation.doc) return;
+    
+    const documentId = deleteConfirmation.doc.id;
+    const filename = deleteConfirmation.doc.original_filename;
+    
     setDeletingDocument(documentId);
+    setDeleteConfirmation({ show: false, doc: null });
     
     try {
       const response = await fetch(`http://35.209.113.236:3001/api/documents/${documentId}`, {
@@ -306,46 +315,11 @@ export function DocumentManager() {
     }
   };
 
-  const removeAllDocuments = async () => {
-    setDeletingAll(true);
-    
-    try {
-      const response = await fetch('http://35.209.113.236:3001/api/documents', {
-        method: 'DELETE',
-      });
-
-      const data: ApiResponse<CodeDocument> = await response.json();
-      
-      if (data.success) {
-        setShowRemoveAllDialog(false);
-        toast({
-          title: "All Documents Deleted",
-          description: `Removed ${data.deletedDocuments || 0} documents, ${data.deletedChunks || 0} chunks, and ${data.deletedVectors || 0} vectors from the system.`,
-        });
-        
-        // Clear local state and refresh
-        setDocuments([]);
-        await loadDocuments();
-      } else {
-        throw new Error(data.error || 'Delete all failed');
-      }
-    } catch (error) {
-      console.error('Delete all error:', error);
-      setShowRemoveAllDialog(false);
-      toast({
-        title: "Delete Failed",
-        description: `Failed to delete all documents: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        variant: "destructive",
-      });
-    } finally {
-      setDeletingAll(false);
-    }
-  };
 
   const viewDocument = (doc: CodeDocument) => {
-    // Open document in new tab/window
-    const downloadUrl = `http://35.209.113.236:3001/api/documents/${doc.id}/download`;
-    window.open(downloadUrl, '_blank');
+    // Open document in new tab/window with view action
+    const viewUrl = `http://35.209.113.236:3001/api/documents/${doc.id}/download?action=view`;
+    window.open(viewUrl, '_blank');
     
     toast({
       title: "Opening Document",
@@ -354,14 +328,21 @@ export function DocumentManager() {
   };
 
   const downloadDocument = (doc: CodeDocument) => {
-    // Download document file
-    const downloadUrl = `http://35.209.113.236:3001/api/documents/${doc.id}/download`;
+    // Download document file with download action
+    const downloadUrl = `http://35.209.113.236:3001/api/documents/${doc.id}/download?action=download`;
+    
+    // Method 1: Try without download attribute first (might trigger Save As dialog)
     const link = document.createElement('a');
     link.href = downloadUrl;
-    link.download = doc.original_filename;
+    // Intentionally NOT setting download attribute to increase chance of Save As dialog
+    // link.download = doc.original_filename;
+    link.style.display = 'none';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    
+    // Alternative Method 2: If you want to try window.open instead (uncomment to test):
+    // window.open(downloadUrl, '_self');
     
     toast({
       title: "Downloading Document",
@@ -473,89 +454,44 @@ export function DocumentManager() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="text-xl font-semibold text-foreground">
-                Document Upload & Management
+                Manage Knowledge Base
               </CardTitle>
               <CardDescription>
-                Upload compliance documents (PDF, DOCX, TXT) to build your searchable knowledge base. Documents are processed and indexed for semantic search.
+                Upload/update compliance documents (PDF, DOCX, TXT) to build your searchable knowledge base. Change status of older documents which are no longer in use to "Inactive".
               </CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="flex-1">
-              <label htmlFor="file-upload" className="cursor-pointer">
-                <Button 
-                  asChild 
-                  size="lg" 
-                  className="w-full"
-                  disabled={uploadingFiles.size > 0}
-                >
-                  <span>
-                    <Upload className="mr-2 h-4 w-4" />
-                    {uploadingFiles.size > 0 ? 'Uploading...' : 'Upload Documents'}
-                  </span>
-                </Button>
-              </label>
-              <input
-                id="file-upload"
-                type="file"
-                multiple
-                accept=".pdf,.doc,.docx,.txt"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-            </div>
-            
-            <Dialog open={showRemoveAllDialog} onOpenChange={setShowRemoveAllDialog}>
-              <DialogTrigger asChild>
-                <Button 
-                  variant="destructive" 
-                  size="lg"
-                  disabled={documents.length === 0 || deletingAll}
-                >
-                  {deletingAll ? (
-                    <>
-                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                      Deleting...
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Remove All
-                    </>
-                  )}
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Remove All Documents</DialogTitle>
-                  <DialogDescription>
-                    Are you sure you want to remove all {documents.length} documents? This will clear your knowledge base and all associated vectors from the search index.
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => setShowRemoveAllDialog(false)}>
-                    Cancel
-                  </Button>
-                  <Button variant="destructive" onClick={removeAllDocuments} disabled={deletingAll}>
-                    {deletingAll ? 'Deleting...' : 'Remove All Documents'}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </div>
-          
-          <div className="mt-4 text-sm text-muted-foreground space-y-1">
-            <p>Supported formats: PDF, Word Documents (DOCX), Text files (TXT)</p>
-            <p>Maximum file size: 50MB per file</p>
+          <div className="max-w-md">
+            <label htmlFor="file-upload" className="cursor-pointer">
+              <Button 
+                asChild 
+                size="lg" 
+                className="w-full"
+                disabled={uploadingFiles.size > 0}
+              >
+                <span>
+                  <Upload className="mr-2 h-4 w-4" />
+                  {uploadingFiles.size > 0 ? 'Uploading...' : 'Upload Documents'}
+                </span>
+              </Button>
+            </label>
+            <input
+              id="file-upload"
+              type="file"
+              multiple
+              accept=".pdf,.doc,.docx,.txt"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
           </div>
         </CardContent>
       </Card>
 
       <Card className="shadow-soft border-border/50">
         <CardHeader>
-          <CardTitle>Document Library</CardTitle>
+          <CardTitle>Manage Knowledge Base</CardTitle>
         </CardHeader>
         <CardContent>
           {/* Upload Progress Indicator */}
@@ -628,7 +564,6 @@ export function DocumentManager() {
                         <span>ID: {doc.id}</span>
                         <span>{formatFileSize(doc.file_size)}</span>
                         <span>Uploaded {formatDate(doc.upload_date)}</span>
-                        <span className="text-accent">{doc.total_chunks} chunks</span>
                       </div>
                     </div>
                   </div>
@@ -656,7 +591,7 @@ export function DocumentManager() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => removeDocument(doc.id, doc.original_filename)}
+                        onClick={() => handleDeleteClick(doc)}
                         disabled={deletingDocument === doc.id || uploadingFiles.size > 0 || doc.id < 0 || ['queued', 'uploading', 'processing'].includes(doc.processing_status)}
                       >
                         {deletingDocument === doc.id ? (
@@ -673,6 +608,34 @@ export function DocumentManager() {
           )}
         </CardContent>
       </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteConfirmation.show} onOpenChange={(open) => setDeleteConfirmation({ show: open, doc: deleteConfirmation.doc })}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Deletion</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete "{deleteConfirmation.doc ? truncateFilename(deleteConfirmation.doc.original_filename) : ''}"? 
+              This action cannot be undone and will remove the document from your knowledge base.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setDeleteConfirmation({ show: false, doc: null })}
+            >
+              Cancel
+            </Button>
+            <Button 
+              variant="destructive" 
+              onClick={confirmDelete}
+              disabled={deletingDocument !== null}
+            >
+              {deletingDocument !== null ? 'Deleting...' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
