@@ -1,8 +1,11 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FileText, TrendingUp, Calendar, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { getColorConfig } from '@/config/colors';
 
 export function Reports() {
+  const colors = getColorConfig();
+  
   return (
     <div className="space-y-6">
       <div className="text-center py-12">
@@ -14,9 +17,15 @@ export function Reports() {
           <p className="text-gray-600 mb-6">
             Generate comprehensive reports for compliance, incidents, and operational analysis
           </p>
-          <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-green-900 mb-2">Coming Soon</h3>
-            <p className="text-green-700">
+          <div 
+            className="rounded-lg p-6" 
+            style={{
+              backgroundColor: colors.sections.comingSoon.background,
+              border: `1px solid ${colors.sections.comingSoon.border}`
+            }}
+          >
+            <h3 className="text-lg font-semibold mb-2" style={{ color: colors.sections.comingSoon.titleText }}>Coming Soon</h3>
+            <p style={{ color: colors.sections.comingSoon.bodyText }}>
               Access detailed reports including incident summaries, compliance audits, 
               training records, and performance metrics with export capabilities.
             </p>

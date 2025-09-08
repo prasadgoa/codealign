@@ -1,7 +1,10 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart, Users, AlertTriangle, Clock } from 'lucide-react';
+import { getColorConfig } from '@/config/colors';
 
 export function Dashboard() {
+  const colors = getColorConfig();
+  
   return (
     <div className="space-y-6">
       <div className="text-center py-12">
@@ -13,9 +16,15 @@ export function Dashboard() {
           <p className="text-gray-600 mb-6">
             Comprehensive analytics and insights for fire department operations
           </p>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-blue-900 mb-2">Coming Soon</h3>
-            <p className="text-blue-700">
+          <div 
+            className="rounded-lg p-6" 
+            style={{
+              backgroundColor: colors.sections.comingSoon.background,
+              border: `1px solid ${colors.sections.comingSoon.border}`
+            }}
+          >
+            <h3 className="text-lg font-semibold mb-2" style={{ color: colors.sections.comingSoon.titleText }}>Coming Soon</h3>
+            <p style={{ color: colors.sections.comingSoon.bodyText }}>
               The dashboard will provide real-time monitoring, incident tracking, 
               compliance metrics, and operational analytics for your fire department.
             </p>

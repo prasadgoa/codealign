@@ -825,9 +825,279 @@ sudo systemctl restart rag-api
 sudo systemctl status rag-api
 ```
 
+## Document Archiving System
+
+### Overview
+The system includes a comprehensive document archiving feature that allows users to remove documents from AI search while keeping them available for reference.
+
+### Database Schema (Added)
+- **status** column: `'active'` | `'archived'` (with check constraint)
+- **archived_date** timestamp: When document was archived
+- **Unique filename constraint**: Only applies to active documents (allows version management)
+
+### API Endpoints
+```bash
+# Archive a document (removes from search, keeps file)
+POST /api/documents/:id/archive
+
+# Restore an archived document (triggers reprocessing)
+POST /api/documents/:id/restore
+
+# List documents with status filter
+GET /api/documents?status=active|archived|all
+```
+
+### Frontend Features
+- **Status filter dropdown**: Active (default) | All | Archived
+- **Clickable status badges**: Click to archive/restore with confirmation
+- **Visual indicators**: Active (green), Archived (gray) with archive date
+- **Smart filename validation**: Prevents conflicts among active documents only
+
+### User Workflow
+1. **Active documents**: Searchable by AI, included in queries
+2. **Archive**: Removes from search, keeps for view/download
+3. **Restore**: Reprocesses and adds back to search
+4. **Version management**: Upload new file with same name after archiving old version
+
+## Frontend Configuration System
+
+### Branding Configuration
+Location: `/src/config/branding.ts`
+
+```typescript
+export const defaultBranding = {
+  appName: "Marshal",
+  assistantName: "Marshal", 
+  documentLibraryName: "Knowledge Base",
+  tagline: "Compliance Command Center",
+  promptDescription: "Ask me anything about fire safety...",
+  primaryDomain: "fire safety"
+};
+```
+
+Components using branding config:
+- Header: App name, tagline, navigation labels
+- Knowledge Base: Headings, assistant name, prompts
+- Compliance Checker: Assistant references, descriptions
+
+### Color System
+- **CSS Variables**: `/src/index.css` with HSL values for theme consistency
+- **Logo Colors**: Hardcoded Tailwind classes in header component
+- **Navigation**: Hardcoded red accent colors
+- **Buttons**: Use CSS variable system (primary/accent gradients)
+
+## Development Workflow
+
+### Frontend Changes (UI, Styles, Components)
+```bash
+# Fast deployment - UI changes only
+npm run build
+# Changes are live immediately - no service restart needed
+```
+
+### Backend Changes (API, Database, Server Logic)
+```bash
+# Full deployment - server changes
+sudo cp -r ~/codealign/rag-api/* /opt/rag-api/
+sudo systemctl restart rag-api
+sudo systemctl status rag-api
+```
+
+**IMPORTANT**: Use the appropriate workflow - don't waste time with full deployment for pure UI changes.
+
+### File Structure
+- **Source directory**: `~/codealign/` (edit here)
+- **Backend source**: `~/codealign/rag-api/` 
+- **Frontend source**: `~/codealign/src/`
+- **Built frontend**: `~/codealign/dist/` (served directly)
+- **Production backend**: `/opt/rag-api/` (deployed, don't edit directly)
+
+## Color Configuration System
+
+### Overview
+The Marshal Fire Department system uses a comprehensive color configuration system that allows easy customization of all UI colors through a centralized configuration file. All colors are organized by functional areas and support multiple themes.
+
+### Configuration Files
+- **Color Config**: `/src/config/colors.ts` - Main color configuration with predefined themes
+- **Branding Config**: `/src/config/branding.ts` - Text and branding configuration
+
+### Available Color Themes
+
+#### Fire Theme (Default)
+- **Logo**: Red gradient with amber shield accent
+- **Navigation**: Red active links, gray inactive
+- **Status Badges**: Green for active, gray for archived
+- **Coming Soon Sections**: Light green background
+- **Error Sections**: Light red background
+
+#### Police Theme
+- **Logo**: Blue gradient with yellow shield accent  
+- **Navigation**: Blue active links
+- **Status Badges**: Blue for active, slate for archived
+- **Coming Soon Sections**: Light blue background
+- **Error Sections**: Light red background
+
+#### Medical/EMS Theme
+- **Logo**: Red gradient with white shield accent
+- **Navigation**: Red active links
+- **Status Badges**: Green for active, gray for archived
+- **Coming Soon Sections**: Light green background
+- **Error Sections**: Light red background
+
+### Color Categories
+
+#### 1. Logo and Branding Colors
+```typescript
+logo: {
+  primary: string;        // Main logo background gradient start
+  primaryEnd: string;     // Main logo background gradient end
+  secondary: string;      // Shield/badge background gradient start
+  secondaryEnd: string;   // Shield/badge background gradient end
+  icon: string;          // Icon color inside logo
+}
+```
+
+#### 2. Navigation and Header Colors
+```typescript
+navigation: {
+  background: string;     // Header background
+  border: string;        // Header border
+  titleText: string;     // App title color
+  taglineText: string;   // Tagline color
+  companyText: string;   // Company name color
+  linkInactive: string;  // Inactive nav links
+  linkActive: string;    // Active/hover nav links
+  activeBorder: string;  // Active tab border
+}
+```
+
+#### 3. Status Badge Colors
+```typescript
+statusBadges: {
+  active: {
+    background: string;   // Active document badge background
+    text: string;        // Active document badge text
+    hover: string;       // Active badge hover state
+  };
+  archived: {
+    background: string;  // Archived document badge background
+    text: string;        // Archived document badge text
+    hover: string;       // Archived badge hover state
+  };
+}
+```
+
+#### 4. Section-specific Colors
+```typescript
+sections: {
+  comingSoon: {
+    background: string;   // Coming soon section background
+    border: string;       // Coming soon section border
+    titleText: string;    // Coming soon title
+    bodyText: string;     // Coming soon description
+  };
+  error: {
+    background: string;   // Error message background
+    border: string;       // Error message border
+    titleText: string;    // Error title text
+    bodyText: string;     // Error body text
+  };
+}
+```
+
+#### 5. Footer Colors
+```typescript
+footer: {
+  background: string;     // Footer background
+  border: string;        // Footer border
+  text: string;          // Footer text
+  companyHighlight: string; // Company name highlight
+}
+```
+
+### How to Change Colors
+
+#### Method 1: Switch to Existing Theme
+1. Edit `/src/config/colors.ts`
+2. Modify the default theme in `getColorConfig()`:
+```typescript
+export const getColorConfig = (themeName: ThemeName = 'police'): ColorConfig => {
+  return colorThemes[themeName];
+};
+```
+3. Run `npm run build` to apply changes
+
+#### Method 2: Customize Individual Colors
+1. Edit `/src/config/colors.ts`
+2. Modify specific color values in the active theme:
+```typescript
+export const fireTheme: ColorConfig = {
+  logo: {
+    primary: "rgb(YOUR_COLOR_HERE)",        // Change logo colors
+    primaryEnd: "rgb(YOUR_COLOR_HERE)",
+    // ... other colors
+  },
+  // ... other sections
+};
+```
+3. Run `npm run build` to apply changes
+
+#### Method 3: Create New Theme
+1. Add new theme to `/src/config/colors.ts`:
+```typescript
+export const customTheme: ColorConfig = {
+  // Define all color categories here
+};
+
+export const colorThemes = {
+  fire: fireTheme,
+  police: policeTheme,
+  medical: medicalTheme,
+  custom: customTheme,  // Add your theme
+} as const;
+```
+2. Update theme selection in `getColorConfig()`
+3. Run `npm run build` to apply changes
+
+### Color Format Guidelines
+- Use **RGB values** for consistency: `rgb(255, 0, 0)`
+- Use **HSL values** for CSS variables: `hsl(0, 100%, 50%)`
+- Avoid hex codes to maintain consistency
+- Test colors for sufficient contrast (WCAG AA compliance)
+
+### Component Integration
+All major components now use the color configuration system:
+- **Header**: Logo, navigation, branding text
+- **Footer**: Background, text, company highlight
+- **Document Manager**: Status badges (Active/Archived)
+- **Dashboard**: Coming soon sections
+- **Reports**: Coming soon sections  
+- **Compliance Checker**: Error messages
+
+### Deployment After Color Changes
+Since colors are frontend-only changes:
+```bash
+# Navigate to project directory
+cd ~/codealign/
+
+# Rebuild frontend (fast deployment)
+npm run build
+
+# Changes are immediately live - no server restart needed
+```
+
+### Future Enhancement Ideas
+- **Theme persistence**: Save user's preferred theme in localStorage
+- **Dynamic theme switching**: Add theme selector in UI
+- **Dark mode support**: Add dark theme variations
+- **Brand customization API**: Allow theme changes via admin panel
+- **CSS custom properties**: Generate CSS variables automatically
+
 ## Important Notes
-1. **Source directory**: `~/codealign/rag-api/` (edit here)
-2. **Deploy directory**: `/opt/rag-api/` (DO NOT edit directly)
+1. **Frontend changes**: Just `npm run build` - much faster
+2. **Backend changes**: Require full deploy + restart
 3. **Don't kill active shell**: Avoid `kill -9` on current process
-4. **Stick to agreed plans**: Consult before changing approach
+4. **Source vs Production**: Always edit in `~/codealign/`, not `/opt/`
+5. **Archive workflow**: Smart filename management for version control
+6. **Color changes**: Frontend only - no server restart required
 

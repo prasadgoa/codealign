@@ -7,6 +7,7 @@ import { CheckCircle, XCircle, AlertTriangle, Loader2, FileText, ExternalLink } 
 import { useToast } from '@/hooks/use-toast';
 import ReactMarkdown from 'react-markdown';
 import { getBrandingConfig } from '@/config/branding';
+import { getColorConfig } from '@/config/colors';
 
 interface ComplianceSource {
   reference?: string;
@@ -42,6 +43,7 @@ export function ComplianceChecker() {
   const [result, setResult] = useState<ComplianceResult | null>(null);
   const { toast } = useToast();
   const branding = getBrandingConfig();
+  const colors = getColorConfig();
 
   const viewDocument = (source: ComplianceSource) => {
     if (!source.document_id) {
@@ -175,12 +177,18 @@ export function ComplianceChecker() {
           <CardContent className="space-y-4">
             {/* Check for service unavailable message and show it prominently */}
             {result.answer.toLowerCase().includes('llm service temporarily unavailable') && (
-              <div className="p-4 rounded-lg bg-red-50 border border-red-200">
-                <div className="flex items-center gap-2 text-red-800">
+              <div 
+                className="p-4 rounded-lg" 
+                style={{
+                  backgroundColor: colors.sections.error.background,
+                  border: `1px solid ${colors.sections.error.border}`
+                }}
+              >
+                <div className="flex items-center gap-2" style={{ color: colors.sections.error.titleText }}>
                   <AlertTriangle className="h-5 w-5" />
                   <span className="font-semibold">AI service temporarily unavailable</span>
                 </div>
-                <p className="text-red-700 mt-1 text-sm">
+                <p className="mt-1 text-sm" style={{ color: colors.sections.error.bodyText }}>
                   Our AI answer generation is currently offline. Document excerpts are shown below.
                 </p>
               </div>

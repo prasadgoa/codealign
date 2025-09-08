@@ -8,6 +8,7 @@ import { Upload, FileText, Trash2, Eye, Plus, RefreshCw, Clock, CheckCircle, XCi
 import { useToast } from '@/hooks/use-toast';
 import { Progress } from '@/components/ui/progress';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { getColorConfig } from '@/config/colors';
 
 interface CodeDocument {
   id: number;
@@ -56,6 +57,7 @@ export function DocumentManager() {
   const [archiveConfirmation, setArchiveConfirmation] = useState<{ show: boolean; doc: CodeDocument | null; action: 'archive' | 'restore' }>({ show: false, doc: null, action: 'archive' });
   const [archivingDocument, setArchivingDocument] = useState<number | null>(null);
   const { toast } = useToast();
+  const colors = getColorConfig();
 
   // Load documents from database
   const loadDocuments = async () => {
@@ -464,8 +466,13 @@ export function DocumentManager() {
           <Tooltip>
             <TooltipTrigger asChild>
               <Badge 
-                variant="secondary" 
-                className="cursor-pointer hover:bg-secondary/80 transition-colors"
+                className="cursor-pointer transition-colors"
+                style={{
+                  backgroundColor: colors.statusBadges.archived.background,
+                  color: colors.statusBadges.archived.text
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = colors.statusBadges.archived.hover}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = colors.statusBadges.archived.background}
                 onClick={() => !isArchiving && handleArchiveClick(doc, 'restore')}
               >
                 {isArchiving ? (
@@ -500,8 +507,13 @@ export function DocumentManager() {
         <Tooltip>
           <TooltipTrigger asChild>
             <Badge 
-              variant="default" 
-              className="bg-accent text-accent-foreground cursor-pointer hover:bg-accent/80 transition-colors"
+              className="cursor-pointer transition-colors"
+              style={{
+                backgroundColor: colors.statusBadges.active.background,
+                color: colors.statusBadges.active.text
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = colors.statusBadges.active.hover}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = colors.statusBadges.active.background}
               onClick={() => !isArchiving && handleArchiveClick(doc, 'archive')}
             >
               {isArchiving ? (
