@@ -886,6 +886,42 @@ Components using branding config:
 - **Navigation**: Hardcoded red accent colors
 - **Buttons**: Use CSS variable system (primary/accent gradients)
 
+### Toast Notification System
+The system includes a comprehensive toast notification system with proper color treatment for user feedback.
+
+**Toast Variants**:
+- **Success** (`variant="success"`): Green background (`bg-green-500/90`) with dark green text (`text-green-950`)
+- **Error** (`variant="destructive"`): Red background (`bg-red-500/90`) with white text (`text-white`)
+- **Default** (no variant): Standard background for informational messages
+
+**Usage Pattern**:
+```typescript
+// Success operations
+toast({
+  title: "Upload Successful",
+  description: "Document processed successfully",
+  variant: "success",
+});
+
+// Error operations  
+toast({
+  title: "Upload Failed", 
+  description: "Please try again",
+  variant: "destructive",
+});
+
+// Informational (no variant needed)
+toast({
+  title: "Processing",
+  description: "Please wait...",
+});
+```
+
+**Key Implementation Details**:
+- **Contrast**: Success toasts use dark green text (green-950) for better readability
+- **Opacity**: Backgrounds use 90% opacity (`/90`) for subtle transparency without sacrificing legibility
+- **Close buttons**: Styled to match toast content colors
+
 ## Development Workflow
 
 ### Frontend Changes (UI, Styles, Components)
@@ -911,6 +947,64 @@ sudo systemctl status rag-api
 - **Frontend source**: `~/codealign/src/`
 - **Built frontend**: `~/codealign/dist/` (served directly)
 - **Production backend**: `/opt/rag-api/` (deployed, don't edit directly)
+
+## Common React Debugging Patterns
+
+### Stale Closure Issues in useCallback/useEffect
+
+**Problem**: Functions created with `useCallback` or inside `useEffect` capture values at creation time. When these functions are called later (e.g., from polling, timers, or async operations), they may use stale values.
+
+**Symptoms**:
+- State appears correct in UI but function uses old values
+- Console shows function called with different values than current state
+- Double function calls with different parameters despite state not changing
+
+**Example Bug Pattern**:
+```typescript
+const [filter, setFilter] = useState('active');
+
+const loadData = useCallback(async () => {
+  console.log('Loading with filter:', filter); // STALE VALUE!
+  // Uses old filter value from when callback was created
+}, [filter]); // Recreates callback on every filter change
+
+useEffect(() => {
+  // Called from polling after state change - uses stale closure
+  setTimeout(() => loadData(), 5000); 
+}, []);
+```
+
+**Solution Pattern**:
+```typescript
+const [filter, setFilter] = useState('active');
+const filterRef = useRef(filter);
+
+// Keep ref in sync with state
+useEffect(() => {
+  filterRef.current = filter;
+}, [filter]);
+
+const loadData = useCallback(async (filterOverride?: string) => {
+  const currentFilter = filterOverride || filterRef.current; // CURRENT VALUE!
+  console.log('Loading with filter:', currentFilter);
+}, []); // No dependencies - function never recreated
+
+useEffect(() => {
+  // Explicitly pass current value
+  setTimeout(() => loadData(filterRef.current), 5000);
+}, []);
+```
+
+**Debugging Steps**:
+1. Add `console.trace()` to identify all call locations
+2. Add logging with both state value and ref value
+3. Check useCallback dependencies - remove state values that cause stale closures
+4. Use refs to access current values in async/polling contexts
+5. Explicitly pass current values when calling from timers/polling
+
+**Key Files Where This Pattern Applies**:
+- `/src/components/document-manager.tsx` - Filter state management
+- Any component with polling/async operations that depend on current state
 
 ## Color Configuration System
 

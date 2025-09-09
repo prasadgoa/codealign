@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -54,25 +54,38 @@ export function DocumentManager() {
   const [deletingDocument, setDeletingDocument] = useState<number | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ show: boolean; doc: CodeDocument | null }>({ show: false, doc: null });
   const [statusFilter, setStatusFilter] = useState<'active' | 'all' | 'archived'>('active');
+  const statusFilterRef = useRef(statusFilter);
+  
+  // Keep ref in sync with state
+  useEffect(() => {
+    statusFilterRef.current = statusFilter;
+  }, [statusFilter]);
   const [archiveConfirmation, setArchiveConfirmation] = useState<{ show: boolean; doc: CodeDocument | null; action: 'archive' | 'restore' }>({ show: false, doc: null, action: 'archive' });
   const [archivingDocument, setArchivingDocument] = useState<number | null>(null);
   const { toast } = useToast();
   const colors = getColorConfig();
 
   // Load documents from database
-  const loadDocuments = async () => {
+  const loadDocuments = useCallback(async (filterOverride?: string) => {
+    const currentFilter = filterOverride || statusFilterRef.current;
     try {
-      const filterParam = statusFilter === 'all' ? '' : `&status=${statusFilter}`;
+      const filterParam = currentFilter === 'all' ? '' : `&status=${currentFilter}`;
       const response = await fetch(`http://35.209.113.236:3001/api/documents?limit=100${filterParam}`);
       const data: ApiResponse<CodeDocument> = await response.json();
       
       if (data.success && data.documents) {
+        // Only update documents if we got a valid response
+        // This prevents clearing documents on transient errors
         setDocuments(data.documents);
+      } else if (data.success && data.documents === undefined) {
+        // API returned success but no documents array - this is unexpected
+        console.warn('API returned success but no documents array');
       } else {
         throw new Error(data.error || 'Failed to load documents');
       }
     } catch (error) {
       console.error('Error loading documents:', error);
+      // Don't clear documents on error - keep showing what we have
       toast({
         title: "Load Error",
         description: "Failed to load documents from database.",
@@ -81,12 +94,12 @@ export function DocumentManager() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   // Load documents on component mount and when status filter changes
   useEffect(() => {
-    loadDocuments();
-  }, [statusFilter]);
+    loadDocuments(statusFilter);
+  }, [statusFilter, loadDocuments]);
 
   // Poll for document status updates
   const pollDocumentStatus = async (documentId: number, filename: string, expectedChunks: number, processingTime?: number) => {
@@ -104,17 +117,38 @@ export function DocumentManager() {
         if (data.success && data.document) {
           const doc = data.document;
           
-          // Update document in state
-          setDocuments(prev => prev.map(d => 
-            d.id === documentId ? { ...d, ...doc } : d
-          ));
+          // Update document in state, preserving the status field if it exists
+          // Need to check both real ID and if this was a temp document now getting its real ID
+          
+          setDocuments(prev => {
+            const updated = prev.map(d => {
+              // Check if this is the document we're updating
+              // It could match by ID or be a temp document getting its first real update
+              if (d.id === documentId || (d.id < 0 && d.temp_id && d.original_filename === doc.original_filename)) {
+                return { 
+                  ...doc,
+                  // Remove temp_id since it now has a real ID
+                  temp_id: undefined,
+                  // Ensure status field is set
+                  status: doc.status || d.status || 'active'
+                };
+              }
+              return d;
+            });
+            
+            return updated;
+          });
           
           // Check if processing is complete
           if (doc.processing_status === 'completed') {
+            
             toast({
               title: "Upload Successful",
               description: `${filename} uploaded successfully. ${doc.total_chunks || expectedChunks} chunks created${processingTime ? ` in ${processingTime}ms` : ''}.`,
+              variant: "success",
             });
+            // Don't reload documents - just let the state update handle it
+            // Reloading was causing the filter to appear to reset
             return; // Stop polling
           } else if (doc.processing_status === 'failed') {
             toast({
@@ -142,7 +176,7 @@ export function DocumentManager() {
           title: "Processing Taking Longer",
           description: `${filename} is still being processed. The page will refresh to check status.`,
         });
-        await loadDocuments();
+        await loadDocuments(statusFilterRef.current);
       }
     };
     
@@ -164,6 +198,7 @@ export function DocumentManager() {
           ...doc,
           processing_status: status,
           id: realId || doc.id,
+          status: doc.status || 'active', // Preserve status field
           error_message: errorMessage,
           // Clear queue position when not queued
           queue_position: status === 'queued' ? doc.queue_position : undefined
@@ -198,6 +233,7 @@ export function DocumentManager() {
         mime_type: file.type,
         upload_date: new Date().toISOString(),
         processing_status: (index === 0 ? 'uploading' : 'queued') as CodeDocument['processing_status'],
+        status: 'active' as const, // Ensure temp documents have status field
         total_chunks: 0,
         actual_chunks: 0,
         created_at: new Date().toISOString(),
@@ -305,9 +341,11 @@ export function DocumentManager() {
         toast({
           title: "Document Deleted",
           description: `${truncateFilename(data.deletedDocument || filename)} removed successfully. Cleaned up ${data.deletedChunks || 0} chunks and ${data.deletedVectors || 0} vectors.`,
+          variant: "success",
         });
         
         // Refresh document list
+        console.log('Calling loadDocuments from handleDelete/handleArchive');
         await loadDocuments();
       } else {
         throw new Error(data.error || 'Delete failed');
@@ -351,9 +389,11 @@ export function DocumentManager() {
         toast({
           title: action === 'archive' ? "Document Archived" : "Document Restored",
           description: data.message,
+          variant: "success",
         });
         
         // Refresh document list
+        console.log('Calling loadDocuments from handleDelete/handleArchive');
         await loadDocuments();
       } else {
         throw new Error(data.error || `${action} failed`);
@@ -378,6 +418,7 @@ export function DocumentManager() {
     toast({
       title: "Opening Document",
       description: `Opening ${truncateFilename(doc.original_filename)}`,
+      variant: "success",
     });
   };
 
@@ -401,6 +442,7 @@ export function DocumentManager() {
     toast({
       title: "Downloading Document",
       description: `Downloading ${truncateFilename(doc.original_filename)}`,
+      variant: "success",
     });
   };
 
@@ -416,6 +458,7 @@ export function DocumentManager() {
         case 'queued':
           return (
             <Badge variant="secondary">
+              <Clock className="h-3 w-3 mr-1" />
               Queued
               {doc.queue_position !== undefined && doc.queue_position > 0 && (
                 <span className="ml-1">#{doc.queue_position + 1}</span>
@@ -425,12 +468,14 @@ export function DocumentManager() {
         case 'uploading':
           return (
             <Badge variant="outline" className="animate-pulse">
+              <Upload className="h-3 w-3 mr-1 animate-bounce" />
               Uploading
             </Badge>
           );
         case 'processing':
           return (
             <Badge variant="outline" className="animate-pulse">
+              <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
               Processing
             </Badge>
           );
@@ -625,9 +670,19 @@ export function DocumentManager() {
             <CardTitle>Manage Knowledge Base</CardTitle>
             <div className="flex items-center space-x-2">
               <span className="text-sm text-muted-foreground">Show:</span>
-              <Select value={statusFilter} onValueChange={(value: 'active' | 'all' | 'archived') => setStatusFilter(value)}>
+              <Select 
+                value={statusFilter} 
+                onValueChange={(value: 'active' | 'all' | 'archived') => {
+                  console.log('Filter changing from', statusFilter, 'to', value);
+                  setStatusFilter(value);
+                }}
+              >
                 <SelectTrigger className="w-32">
-                  <SelectValue />
+                  <SelectValue>
+                    {statusFilter === 'active' ? 'Active' : 
+                     statusFilter === 'all' ? 'All' : 
+                     statusFilter === 'archived' ? 'Archived' : 'Active'}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="active">Active</SelectItem>
@@ -666,7 +721,7 @@ export function DocumentManager() {
             return null;
           })()}
           
-          {documents.length === 0 ? (
+          {(console.log(`🔍 Rendering: documents.length=${documents.length}, statusFilter="${statusFilter}"`), documents.length === 0) ? (
             <div className="text-center py-12">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-semibold text-foreground mb-2">No Documents</h3>
